@@ -461,11 +461,39 @@ function buildGlider() {
   fin.position.set(0, 0.5, 2.6);
   group.add(fin);
 
+  const propeller = buildPropeller();
+  propeller.position.set(0, 0, -3.5);
+  group.add(propeller);
+  group.userData.propeller = propeller;
+
   group.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
   return group;
 }
+
+/* Simple 3-blade propeller, spinning about local Z (the fuselage/forward axis). */
+function buildPropeller() {
+  const group = new THREE.Group();
+  const propMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.35, metalness: 0.4 });
+
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.18, 10), propMat);
+  hub.rotation.x = Math.PI / 2;
+  group.add(hub);
+
+  const bladeGeo = new THREE.BoxGeometry(0.11, 0.95, 0.02);
+  for (let i = 0; i < 3; i++) {
+    const blade = new THREE.Mesh(bladeGeo, propMat);
+    blade.position.y = 0.5;
+    const pivot = new THREE.Group();
+    pivot.rotation.z = (i * Math.PI * 2) / 3;
+    pivot.add(blade);
+    group.add(pivot);
+  }
+  return group;
+}
+
 const glider = buildGlider();
 scene.add(glider);
+const propeller = glider.userData.propeller;
 
 /* --- Ring course: five gates to fly through, in order --- */
 const RING_COLORS = {
@@ -761,6 +789,10 @@ function frame(now) {
   glider.position.copy(state.pos);
   glider.quaternion.copy(state.quat);
 
+  if (state.launched && !state.crashed && !state.landed) {
+    propeller.rotation.z += dt * 32;
+  }
+
   if (!courseWon && ringIndex < rings.length) {
     rings[ringIndex].torusMat.emissiveIntensity = 0.6 + 0.4 * Math.sin(now * 0.006);
   }
@@ -776,5 +808,6 @@ requestAnimationFrame(frame);
 window.__sim = {
   state, controls, input, extractAttitude, resetState, physicsStep,
   rings, getRingIndex: () => ringIndex, isCourseWon: () => courseWon,
+  propeller, camera, glider,
 };
 })();
