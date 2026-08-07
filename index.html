@@ -61,6 +61,14 @@
     <div class="joystick-base"><div class="joystick-knob"></div></div>
     <div class="joystick-tag">YAW / AIRBRAKE</div>
   </div>
+
+  <div id="throttle" class="slider-vert">
+    <div class="slider-track">
+      <div class="slider-fill"></div>
+      <div class="slider-handle"></div>
+    </div>
+    <div class="slider-tag">THROTTLE</div>
+  </div>
 </div>
 
 <div id="start-overlay">
@@ -68,9 +76,10 @@
     <h1>Six-DOF Glider Simulator</h1>
     <p>A small motor glider &mdash; a light sailplane with a weak engine &mdash; fully simulated in 6 degrees of freedom: roll, pitch, yaw, and 3D position.</p>
     <ul>
-      <li><b>Left stick</b> &mdash; elevator (pitch) &amp; ailerons (roll)</li>
+      <li><b>Left stick</b> &mdash; elevator (pitch, inverted: down = nose up) &amp; ailerons (roll)</li>
       <li><b>Right stick</b> &mdash; rudder (yaw, left/right) &amp; airbrake (drag down)</li>
-      <li><b>LAUNCH</b> &mdash; release from tow at altitude</li>
+      <li><b>THROTTLE</b> &mdash; drag up/down to set engine power; holds its position</li>
+      <li><b>LAUNCH</b> &mdash; release from tow at altitude, at full throttle</li>
       <li><b>TILT</b> &mdash; optional: steer by tilting your phone</li>
     </ul>
     <p>Fly through all 5 rings, in order, to win. A new random course spawns every launch.</p>

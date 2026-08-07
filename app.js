@@ -39,10 +39,10 @@ const CN_RUDDER = 0.06;
 const CN_R = 0.45;
 const CN_BETA = 0.13;
 
-// Small fixed-power engine: roughly offsets cruise drag so the aircraft can
-// sustain level flight instead of always sinking, without being strong
-// enough to power through a stall or a steep climb.
-const THRUST = 310; // N
+// Small engine: at full throttle, roughly offsets cruise drag so the
+// aircraft can sustain level flight instead of always sinking, without
+// being strong enough to power through a stall or a steep climb.
+const MAX_THRUST = 310; // N, at throttle = 1
 
 const STALL_SPEED = Math.sqrt((2 * MASS * G) / (RHO * S_WING * (CL0 + CLALPHA * STALL_ALPHA)));
 const LAUNCH_ALT = 400;
@@ -84,7 +84,7 @@ const state = {
   beta: 0,
 };
 
-const controls = { aileron: 0, elevator: 0, rudder: 0, airbrake: 0 };
+const controls = { aileron: 0, elevator: 0, rudder: 0, airbrake: 0, throttle: 1 };
 
 const rings = []; // filled in by spawnRings() once the scene exists
 let ringIndex = 0;
@@ -103,6 +103,8 @@ function resetState() {
   state.launched = true;
   state.crashed = false;
   state.landed = false;
+  input.throttle = 1;
+  if (throttleVisualUpdate) throttleVisualUpdate(1);
   hideMessage();
   spawnRings();
 }
@@ -157,7 +159,7 @@ function physicsStep(dt) {
   const aeroForceBody = dir.clone().multiplyScalar(-D)
     .add(liftDir.multiplyScalar(L))
     .add(sideDir.multiplyScalar(Y))
-    .add(LOCAL_FWD.clone().multiplyScalar(THRUST));
+    .add(LOCAL_FWD.clone().multiplyScalar(MAX_THRUST * controls.throttle));
 
   const aeroForceWorld = aeroForceBody.applyQuaternion(q);
   const gravityForce = new V3(0, -MASS * G, 0);
@@ -230,9 +232,10 @@ function checkGround() {
 /* ------------------------------------------------------------------ *
  *  Controls: touch joysticks + optional device tilt                  *
  * ------------------------------------------------------------------ */
-const input = { left: { x: 0, y: 0 }, right: { x: 0, y: 0 } };
+const input = { left: { x: 0, y: 0 }, right: { x: 0, y: 0 }, throttle: 1 };
 let tiltEnabled = false;
 let tiltBaseline = null;
+let throttleVisualUpdate = null;
 
 function setupJoystick(rootEl, target) {
   const knob = rootEl.querySelector(".joystick-knob");
@@ -285,6 +288,49 @@ function setupJoystick(rootEl, target) {
   rootEl.addEventListener("pointercancel", end);
 }
 
+// Unlike the joysticks, the throttle holds its position on release rather
+// than springing back to center - it's a lever, not a stick.
+function setupThrottleSlider(rootEl, target) {
+  const fill = rootEl.querySelector(".slider-fill");
+  const handle = rootEl.querySelector(".slider-handle");
+  const track = rootEl.querySelector(".slider-track");
+  let pointerId = null;
+
+  function applyVisual(value) {
+    const pct = THREE.MathUtils.clamp(value, 0, 1) * 100;
+    fill.style.height = pct + "%";
+    handle.style.bottom = pct + "%";
+  }
+
+  function move(clientY) {
+    const rect = track.getBoundingClientRect();
+    const value = 1 - THREE.MathUtils.clamp((clientY - rect.top) / rect.height, 0, 1);
+    target.throttle = value;
+    applyVisual(value);
+  }
+
+  rootEl.addEventListener("pointerdown", (e) => {
+    pointerId = e.pointerId;
+    rootEl.setPointerCapture(e.pointerId);
+    move(e.clientY);
+    e.preventDefault();
+  });
+  rootEl.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== pointerId) return;
+    move(e.clientY);
+    e.preventDefault();
+  });
+  function end(e) {
+    if (e.pointerId !== pointerId) return;
+    pointerId = null;
+  }
+  rootEl.addEventListener("pointerup", end);
+  rootEl.addEventListener("pointercancel", end);
+
+  applyVisual(target.throttle);
+  return applyVisual;
+}
+
 function setupTilt() {
   const btn = document.getElementById("btn-tilt");
   btn.addEventListener("click", async () => {
@@ -313,9 +359,11 @@ function setupTilt() {
 
 function updateControlsFromInput() {
   controls.aileron = THREE.MathUtils.clamp(input.left.x, -1, 1);
-  controls.elevator = THREE.MathUtils.clamp(-input.left.y, -1, 1);
+  // Inverted: stick/tilt up = nose down, stick/tilt down = nose up.
+  controls.elevator = THREE.MathUtils.clamp(input.left.y, -1, 1);
   controls.rudder = THREE.MathUtils.clamp(input.right.x, -1, 1);
   controls.airbrake = THREE.MathUtils.clamp(input.right.y, 0, 1);
+  controls.throttle = THREE.MathUtils.clamp(input.throttle, 0, 1);
 }
 
 /* ------------------------------------------------------------------ *
@@ -736,6 +784,7 @@ document.getElementById("btn-launch").addEventListener("click", resetState);
 
 setupJoystick(document.getElementById("stick-left"), input.left);
 setupJoystick(document.getElementById("stick-right"), input.right);
+throttleVisualUpdate = setupThrottleSlider(document.getElementById("throttle"), input);
 setupTilt();
 
 /* ------------------------------------------------------------------ *
@@ -790,7 +839,7 @@ function frame(now) {
   glider.quaternion.copy(state.quat);
 
   if (state.launched && !state.crashed && !state.landed) {
-    propeller.rotation.z += dt * 32;
+    propeller.rotation.z += dt * (8 + 24 * controls.throttle);
   }
 
   if (!courseWon && ringIndex < rings.length) {
