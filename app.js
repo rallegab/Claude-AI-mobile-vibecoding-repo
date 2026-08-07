@@ -46,6 +46,22 @@ const LAUNCH_SPEED = STALL_SPEED * 1.6;
 const GROUND_LEVEL = 0;
 
 /* ------------------------------------------------------------------ *
+ *  Ring course                                                       *
+ * ------------------------------------------------------------------ */
+const RING_MESSAGES = [
+  "CHAVY,\nMAKE ME MORE MONEY",
+  "NICK,\nMAKE ME MORE MONEY TOO",
+  "YOU TOO -\nMAKE ME MORE MONEY",
+  "LUIS, YOU'RE TOO SAD.\nGET HAPPIER!",
+  "LAST RING -\nMAKE IT RAIN!",
+];
+const WIN_TITLE = "CONGRATS, PANJIA FOUNDER!";
+const WIN_SUBTITLE = "YOU BEAT THE GAME";
+
+const RING_HOLE_RADIUS = 14;
+const RING_TUBE_RADIUS = 1.2;
+
+/* ------------------------------------------------------------------ *
  *  Simulation state                                                  *
  * ------------------------------------------------------------------ */
 const V3 = THREE.Vector3;
@@ -65,6 +81,10 @@ const state = {
 
 const controls = { aileron: 0, elevator: 0, rudder: 0, airbrake: 0 };
 
+const rings = []; // filled in by spawnRings() once the scene exists
+let ringIndex = 0;
+let courseWon = false;
+
 const LOCAL_FWD = new V3(0, 0, -1);
 const LOCAL_RIGHT = new V3(1, 0, 0);
 const LOCAL_UP = new V3(0, 1, 0);
@@ -79,11 +99,13 @@ function resetState() {
   state.crashed = false;
   state.landed = false;
   hideMessage();
+  spawnRings();
 }
 
 function physicsStep(dt) {
   if (!state.launched || state.crashed || state.landed) return;
 
+  const prevPos = state.pos.clone();
   const q = state.quat;
   const qInv = q.clone().invert();
   const vBody = state.vel.clone().applyQuaternion(qInv);
@@ -167,6 +189,7 @@ function physicsStep(dt) {
 
   state.pos.addScaledVector(state.vel, dt);
 
+  checkRingCrossing(prevPos, state.pos);
   checkGround();
 }
 
@@ -438,6 +461,156 @@ function buildGlider() {
 const glider = buildGlider();
 scene.add(glider);
 
+/* --- Ring course: five gates to fly through, in order --- */
+const RING_COLORS = {
+  upcoming: { color: 0x3a5a78, emissive: 0x0c1822, intensity: 0.4 },
+  active: { color: 0xffb020, emissive: 0xffb020, intensity: 1 },
+  passed: { color: 0x4ce88a, emissive: 0x1f6b3f, intensity: 0.5 },
+};
+
+function makeTextTexture(text, size) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, size, size);
+
+  const forcedLines = text.split("\n");
+  const fontSize = forcedLines.length > 1 ? size * 0.11 : size * 0.14;
+  ctx.font = `900 ${fontSize}px system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const maxWidth = size * 0.82;
+  const lines = [];
+  for (const forced of forcedLines) {
+    const words = forced.split(" ");
+    let line = "";
+    for (const word of words) {
+      const test = line ? line + " " + word : word;
+      if (ctx.measureText(test).width > maxWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = test;
+      }
+    }
+    lines.push(line);
+  }
+
+  const lineHeight = fontSize * 1.2;
+  const startY = size / 2 - ((lines.length - 1) * lineHeight) / 2;
+  ctx.lineJoin = "round";
+  ctx.lineWidth = fontSize * 0.16;
+  ctx.strokeStyle = "rgba(10,15,20,0.85)";
+  ctx.fillStyle = "#ffffff";
+  lines.forEach((line, i) => {
+    const y = startY + i * lineHeight;
+    ctx.strokeText(line, size / 2, y);
+    ctx.fillText(line, size / 2, y);
+  });
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function buildRingVisual(message) {
+  const group = new THREE.Group();
+
+  const torusGeo = new THREE.TorusGeometry(RING_HOLE_RADIUS + RING_TUBE_RADIUS, RING_TUBE_RADIUS, 12, 32);
+  const torusMat = new THREE.MeshStandardMaterial({ color: 0x3a5a78, emissive: 0x0c1822, roughness: 0.4 });
+  const torus = new THREE.Mesh(torusGeo, torusMat);
+  group.add(torus);
+
+  const planeSize = (RING_HOLE_RADIUS - 1) * 2;
+  const textTex = makeTextTexture(message, 512);
+  const textMat = new THREE.MeshBasicMaterial({ map: textTex, transparent: true, side: THREE.DoubleSide, depthWrite: false });
+  const textPlane = new THREE.Mesh(new THREE.PlaneGeometry(planeSize, planeSize), textMat);
+  // Plane's front face defaults to local +Z, but players approach from the
+  // -Z side (opposite the ring's direction-of-travel normal) - flip so the
+  // text reads correctly on approach rather than mirrored.
+  textPlane.rotation.y = Math.PI;
+  group.add(textPlane);
+
+  scene.add(group);
+  return { group, torus, torusMat, center: new V3(), normal: new V3(0, 0, 1), passed: false };
+}
+
+for (const msg of RING_MESSAGES) rings.push(buildRingVisual(msg));
+
+// setFromUnitVectors only constrains the forward axis, leaving roll about it
+// arbitrary - build an up-preserving basis instead so rings don't tilt randomly.
+function quaternionFromForward(forward) {
+  const worldUp = Math.abs(forward.y) > 0.99 ? new V3(1, 0, 0) : new V3(0, 1, 0);
+  const right = new V3().crossVectors(worldUp, forward).normalize();
+  const up = new V3().crossVectors(forward, right).normalize();
+  const m = new THREE.Matrix4().makeBasis(right, up, forward);
+  return new THREE.Quaternion().setFromRotationMatrix(m);
+}
+
+function setRingVisualState(ring, stateName) {
+  const c = RING_COLORS[stateName];
+  ring.torusMat.color.setHex(c.color);
+  ring.torusMat.emissive.setHex(c.emissive);
+  ring.torusMat.emissiveIntensity = c.intensity;
+}
+
+function spawnRings() {
+  ringIndex = 0;
+  courseWon = false;
+  hideWinBanner();
+
+  const points = [];
+  let cursor = new V3(0, LAUNCH_ALT - (60 + Math.random() * 70), -(300 + Math.random() * 150));
+  points.push(cursor.clone());
+  for (let i = 1; i < rings.length; i++) {
+    const lateral = THREE.MathUtils.clamp(cursor.x + (Math.random() * 2 - 1) * 170, -420, 420);
+    const forward = cursor.z - (200 + Math.random() * 180);
+    const altitude = Math.max(70, cursor.y - (25 + Math.random() * 55));
+    cursor = new V3(lateral, altitude, forward);
+    points.push(cursor.clone());
+  }
+
+  for (let i = 0; i < rings.length; i++) {
+    const ring = rings[i];
+    const nextPoint = points[Math.min(i + 1, points.length - 1)];
+    const dir = i < points.length - 1
+      ? nextPoint.clone().sub(points[i]).normalize()
+      : points[i].clone().sub(points[i - 1]).normalize();
+
+    ring.center.copy(points[i]);
+    ring.normal.copy(dir);
+    ring.passed = false;
+    ring.group.position.copy(points[i]);
+    ring.group.quaternion.copy(quaternionFromForward(dir));
+    setRingVisualState(ring, i === 0 ? "active" : "upcoming");
+  }
+}
+
+function checkRingCrossing(prevPos, currPos) {
+  if (courseWon || ringIndex >= rings.length) return;
+  const ring = rings[ringIndex];
+  const d0 = prevPos.clone().sub(ring.center).dot(ring.normal);
+  const d1 = currPos.clone().sub(ring.center).dot(ring.normal);
+  if ((d0 > 0) === (d1 > 0)) return;
+  const t = d0 / (d0 - d1);
+  const hit = prevPos.clone().lerp(currPos, t);
+  if (hit.distanceTo(ring.center) <= RING_HOLE_RADIUS) passRing();
+}
+
+function passRing() {
+  const ring = rings[ringIndex];
+  ring.passed = true;
+  setRingVisualState(ring, "passed");
+  ringIndex++;
+  if (ringIndex < rings.length) {
+    setRingVisualState(rings[ringIndex], "active");
+  } else {
+    courseWon = true;
+    showWinBanner();
+  }
+}
+
 /* --- Camera rig --- */
 let cameraMode = "chase"; // chase | cockpit
 const chaseOffset = new V3(0, 3.2, 11);
@@ -471,6 +644,10 @@ const hudBank = document.getElementById("hud-bank");
 const hudPitch = document.getElementById("hud-pitch");
 const aiHorizon = document.getElementById("ai-horizon");
 const messageBanner = document.getElementById("message-banner");
+const winBanner = document.getElementById("win-banner");
+const winTitleEl = document.getElementById("win-title");
+const winSubtitleEl = document.getElementById("win-subtitle");
+const hudRingCount = document.getElementById("hud-ring-count");
 
 let messageTimer = null;
 function showMessage(text, color) {
@@ -481,6 +658,15 @@ function showMessage(text, color) {
 }
 function hideMessage() {
   messageBanner.classList.remove("show");
+}
+
+function showWinBanner() {
+  winTitleEl.textContent = WIN_TITLE;
+  winSubtitleEl.textContent = WIN_SUBTITLE;
+  winBanner.classList.add("show");
+}
+function hideWinBanner() {
+  winBanner.classList.remove("show");
 }
 
 function updateHud() {
@@ -502,6 +688,8 @@ function updateHud() {
   } else if (!state.crashed && !state.landed && messageBanner.textContent === "STALL") {
     hideMessage();
   }
+
+  hudRingCount.textContent = Math.min(ringIndex, rings.length);
 }
 
 /* ------------------------------------------------------------------ *
@@ -567,6 +755,10 @@ function frame(now) {
   glider.position.copy(state.pos);
   glider.quaternion.copy(state.quat);
 
+  if (!courseWon && ringIndex < rings.length) {
+    rings[ringIndex].torusMat.emissiveIntensity = 0.6 + 0.4 * Math.sin(now * 0.006);
+  }
+
   updateCamera(dt);
   updateHud();
 
@@ -575,5 +767,8 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // Exposed for debugging / automated checks.
-window.__sim = { state, controls, input, extractAttitude, resetState, physicsStep };
+window.__sim = {
+  state, controls, input, extractAttitude, resetState, physicsStep,
+  rings, getRingIndex: () => ringIndex, isCourseWon: () => courseWon,
+};
 })();

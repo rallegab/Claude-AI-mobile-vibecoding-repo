@@ -129,6 +129,46 @@ html, body {
 }
 #message-banner.show { opacity: 1; }
 
+#win-banner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.85);
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s, transform 0.4s;
+}
+#win-banner.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+#win-title {
+  font-size: 34px;
+  font-weight: 900;
+  letter-spacing: 1.5px;
+  color: #ffe066;
+  text-shadow: 0 3px 10px rgba(0,0,0,0.8), 0 0 24px rgba(255,224,102,0.6);
+}
+#win-subtitle {
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: #d7f0ff;
+  text-shadow: 0 2px 6px rgba(0,0,0,0.8);
+}
+
+#hud-rings {
+  top: auto;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 160px);
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  min-width: 0;
+  padding: 6px 16px;
+}
+
 .icon-btn, .text-btn {
   position: absolute;
   pointer-events: auto;
