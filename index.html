@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#0a1622">
+<title>Glider 6DOF Simulator</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+
+<!-- HUD -->
+<div id="hud">
+  <div id="hud-top-left" class="panel">
+    <div class="hud-row"><span class="label">IAS</span><span id="hud-speed" class="value">0</span><span class="unit">km/h</span></div>
+    <div class="hud-row"><span class="label">ALT</span><span id="hud-alt" class="value">0</span><span class="unit">m</span></div>
+    <div class="hud-row"><span class="label">V/S</span><span id="hud-vs" class="value">0.0</span><span class="unit">m/s</span></div>
+  </div>
+
+  <div id="hud-top-right" class="panel">
+    <div class="hud-row"><span class="label">HDG</span><span id="hud-hdg" class="value">000</span><span class="unit">°</span></div>
+    <div class="hud-row"><span class="label">BANK</span><span id="hud-bank" class="value">0</span><span class="unit">°</span></div>
+    <div class="hud-row"><span class="label">PITCH</span><span id="hud-pitch" class="value">0</span><span class="unit">°</span></div>
+  </div>
+
+  <div id="attitude-indicator">
+    <div id="ai-horizon">
+      <div id="ai-sky"></div>
+      <div id="ai-ground"></div>
+    </div>
+    <div id="ai-bezel"></div>
+    <div id="ai-wings"></div>
+  </div>
+
+  <div id="message-banner"></div>
+
+  <button id="btn-camera" class="icon-btn" aria-label="Toggle camera">CAM</button>
+  <button id="btn-tilt" class="icon-btn" aria-label="Toggle tilt control">TILT</button>
+  <button id="btn-launch" class="text-btn">LAUNCH</button>
+
+  <div id="stick-left" class="joystick">
+    <div class="joystick-base"><div class="joystick-knob"></div></div>
+    <div class="joystick-tag">PITCH / ROLL</div>
+  </div>
+  <div id="stick-right" class="joystick">
+    <div class="joystick-base"><div class="joystick-knob"></div></div>
+    <div class="joystick-tag">YAW / AIRBRAKE</div>
+  </div>
+</div>
+
+<div id="start-overlay">
+  <div id="start-card">
+    <h1>Six-DOF Glider Simulator</h1>
+    <p>A small unpowered sailplane, fully simulated in 6 degrees of freedom &mdash; roll, pitch, yaw, and 3D position.</p>
+    <ul>
+      <li><b>Left stick</b> &mdash; elevator (pitch) &amp; ailerons (roll)</li>
+      <li><b>Right stick</b> &mdash; rudder (yaw, left/right) &amp; airbrake (drag down)</li>
+      <li><b>LAUNCH</b> &mdash; release from tow at altitude</li>
+      <li><b>TILT</b> &mdash; optional: steer by tilting your phone</li>
+    </ul>
+    <button id="btn-start">Tap to Start</button>
+  </div>
+</div>
+
+<script src="vendor/three.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
