@@ -2,7 +2,7 @@
 "use strict";
 
 /* ------------------------------------------------------------------ *
- *  Constants: a small single-seat sailplane                          *
+ *  Constants: a small single-seat motor glider                       *
  * ------------------------------------------------------------------ */
 const G = 9.81;
 const RHO = 1.225;
@@ -20,28 +20,33 @@ const I_ROLL = 700;        // kg*m^2, about local Z (aft) axis
 const CL0 = 0.2;
 const CLALPHA = 5.5;       // per rad
 const STALL_ALPHA = 14 * Math.PI / 180;
-const CD0 = 0.02;
+const CD0 = 0.032;         // higher than a pure sailplane: cowling/prop drag
 const K_INDUCED = 1 / (Math.PI * 0.85 * AR);
 const AIRBRAKE_CD = 0.9;
 
 const CY_BETA = 0.6;
 
 const CL_AILERON = 0.09;
-const CL_P = 0.5;
+const CL_P = 0.65;
 const CL_BETA = 0.06;       // dihedral effect (roll restoring)
 
 const CM0 = 0.02;
-const CM_ALPHA = -0.6;      // pitch static stability
-const CM_Q = 12;
+const CM_ALPHA = -0.95;     // pitch static stability
+const CM_Q = 17;
 const CM_ELEVATOR = 0.16;
 
 const CN_RUDDER = 0.06;
-const CN_R = 0.35;
-const CN_BETA = 0.09;
+const CN_R = 0.45;
+const CN_BETA = 0.13;
+
+// Small fixed-power engine: roughly offsets cruise drag so the aircraft can
+// sustain level flight instead of always sinking, without being strong
+// enough to power through a stall or a steep climb.
+const THRUST = 310; // N
 
 const STALL_SPEED = Math.sqrt((2 * MASS * G) / (RHO * S_WING * (CL0 + CLALPHA * STALL_ALPHA)));
 const LAUNCH_ALT = 400;
-const LAUNCH_SPEED = STALL_SPEED * 1.6;
+const LAUNCH_SPEED = STALL_SPEED * 2.2; // close to the powered trim speed, to minimize the release transient
 
 const GROUND_LEVEL = 0;
 
@@ -151,7 +156,8 @@ function physicsStep(dt) {
 
   const aeroForceBody = dir.clone().multiplyScalar(-D)
     .add(liftDir.multiplyScalar(L))
-    .add(sideDir.multiplyScalar(Y));
+    .add(sideDir.multiplyScalar(Y))
+    .add(LOCAL_FWD.clone().multiplyScalar(THRUST));
 
   const aeroForceWorld = aeroForceBody.applyQuaternion(q);
   const gravityForce = new V3(0, -MASS * G, 0);
