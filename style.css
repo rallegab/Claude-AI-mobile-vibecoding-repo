@@ -190,8 +190,8 @@ html, body {
   width: 56px;
 }
 #btn-tilt {
-  top: calc(env(safe-area-inset-top, 0px) + 168px);
-  right: calc(env(safe-area-inset-right, 0px) + 10px);
+  top: calc(env(safe-area-inset-top, 0px) + 120px);
+  right: calc(env(safe-area-inset-right, 0px) + 72px);
   width: 56px;
 }
 #btn-launch {
@@ -243,10 +243,10 @@ html, body {
 
 .slider-vert {
   position: absolute;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
-  left: calc(50% + 90px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 170px);
+  right: calc(env(safe-area-inset-right, 0px) + 63px);
   width: 40px;
-  height: 130px;
+  height: 70px;
   pointer-events: auto;
 }
 .slider-track {
