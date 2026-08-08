@@ -58,6 +58,9 @@ const RING_MESSAGES = [
   "NICK,\nMAKE ME MORE MONEY TOO",
   "YOU TOO -\nMAKE ME MORE MONEY",
   "LUIS, YOU'RE TOO SAD.\nGET HAPPIER!",
+  "NICE FLYING!",
+  "KEEP IT UP!",
+  "ALMOST THERE!",
   "LAST RING -\nMAKE IT RAIN!",
 ];
 const WIN_TITLE = "CONGRATS, PANJIA FOUNDER!";
@@ -90,6 +93,26 @@ const rings = []; // filled in by spawnRings() once the scene exists
 let ringIndex = 0;
 let courseWon = false;
 
+/* ------------------------------------------------------------------ *
+ *  Wind: a steady breeze plus layered, ever-changing gusts. Horizontal *
+ *  only, world frame. Several sine waves at incommensurate frequencies *
+ *  are summed per axis so direction and strength both wander smoothly, *
+ *  irregularly, and without ever exactly repeating on a short cycle.   *
+ * ------------------------------------------------------------------ */
+const WIND_MEAN = new V3(3, 0, -2);   // steady prevailing breeze, m/s
+const WIND_GUST_AMPLITUDE = 4.5;      // m/s, layered on top of the mean
+
+const wind = new V3();
+let windTime = 0;
+
+function updateWind(dt) {
+  windTime += dt;
+  const t = windTime;
+  const gx = WIND_GUST_AMPLITUDE * (0.5 * Math.sin(t * 0.08 + 0.4) + 0.3 * Math.sin(t * 0.23 + 2.1) + 0.2 * Math.sin(t * 0.61 + 4.7));
+  const gz = WIND_GUST_AMPLITUDE * (0.5 * Math.sin(t * 0.11 + 1.3) + 0.3 * Math.sin(t * 0.31 + 3.6) + 0.2 * Math.sin(t * 0.77 + 0.9));
+  wind.set(WIND_MEAN.x + gx, 0, WIND_MEAN.z + gz);
+}
+
 const LOCAL_FWD = new V3(0, 0, -1);
 const LOCAL_RIGHT = new V3(1, 0, 0);
 const LOCAL_UP = new V3(0, 1, 0);
@@ -112,15 +135,18 @@ function resetState() {
 function physicsStep(dt) {
   if (!state.launched || state.crashed || state.landed) return;
 
+  updateWind(dt);
+
   const prevPos = state.pos.clone();
   const q = state.quat;
   const qInv = q.clone().invert();
-  const vBody = state.vel.clone().applyQuaternion(qInv);
+  const relativeVel = state.vel.clone().sub(wind); // airflow relative to the moving air mass, not the ground
+  const vBody = relativeVel.clone().applyQuaternion(qInv);
 
   const u = -vBody.z;              // forward speed
   const w = -vBody.y;              // "downward" component in body frame
   const v = vBody.x;               // sideways speed
-  const V_air = Math.max(state.vel.length(), 0.01);
+  const V_air = Math.max(relativeVel.length(), 0.01);
 
   const alpha = Math.atan2(w, Math.max(u, 0.01));
   const beta = Math.atan2(v, Math.max(u, 0.01));
@@ -730,6 +756,9 @@ const winBanner = document.getElementById("win-banner");
 const winTitleEl = document.getElementById("win-title");
 const winSubtitleEl = document.getElementById("win-subtitle");
 const hudRingCount = document.getElementById("hud-ring-count");
+document.getElementById("hud-ring-total").textContent = rings.length;
+const windArrowEl = document.getElementById("wind-arrow");
+const hudWindSpeed = document.getElementById("hud-wind-speed");
 
 let messageTimer = null;
 function showMessage(text, color) {
@@ -764,6 +793,12 @@ function updateHud() {
   aiHorizon.style.transform = `translate(-50%, -50%) rotate(${bank}rad) translateY(${pitchPx}px)`;
   aiHorizon.style.top = "50%";
   aiHorizon.style.left = "50%";
+
+  // Arrow points in the compass direction the wind is blowing toward, same
+  // 0=forward/-Z convention as heading, so it's directly comparable to HDG.
+  const windAngle = Math.atan2(wind.x, -wind.z);
+  windArrowEl.style.transform = `rotate(${windAngle}rad)`;
+  hudWindSpeed.textContent = Math.round(wind.length() * 3.6);
 
   if (state.alpha > STALL_ALPHA && state.launched && !state.crashed && !state.landed) {
     showMessage("STALL", "#ff9d3d");
@@ -857,6 +892,6 @@ requestAnimationFrame(frame);
 window.__sim = {
   state, controls, input, extractAttitude, resetState, physicsStep,
   rings, getRingIndex: () => ringIndex, isCourseWon: () => courseWon,
-  propeller, camera, glider,
+  propeller, camera, glider, wind,
 };
 })();

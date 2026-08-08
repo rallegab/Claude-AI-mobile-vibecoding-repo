@@ -113,6 +113,49 @@ html, body {
 #ai-wings::before { left: 0; }
 #ai-wings::after { right: 0; }
 
+#wind-indicator {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 116px);
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+}
+#wind-dial {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto;
+  border-radius: 50%;
+  background: rgba(6, 14, 22, 0.55);
+  border: 1px solid rgba(140, 200, 230, 0.3);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+}
+#wind-arrow {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 50%;
+  transition: transform 0.3s ease-out;
+}
+.arrow-tri {
+  position: absolute;
+  left: 50%;
+  top: 7px;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 14px solid #ffcf40;
+  transform: translateX(-50%);
+}
+#wind-readout {
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #9cc2d8;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
+
 #message-banner {
   position: absolute;
   top: 40%;
