@@ -252,7 +252,139 @@ function checkGround() {
   } else {
     state.crashed = true;
     showMessage("CRASHED", "#ff6b6b");
+    playCrashSound();
   }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Audio: everything synthesized via Web Audio API, no sound assets   *
+ * ------------------------------------------------------------------ */
+let audioCtx = null;
+let masterGain = null;
+let engineOsc1 = null, engineOsc2 = null, engineGain = null;
+let soundEnabled = true;
+
+// Must be called from a user-gesture handler (mobile autoplay policy).
+function initAudio() {
+  if (audioCtx) return;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  audioCtx = new Ctx();
+
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = soundEnabled ? 0.6 : 0;
+  masterGain.connect(audioCtx.destination);
+
+  // Two slightly detuned sawtooths through a lowpass filter for a buzzy,
+  // idle-to-full-throttle engine drone.
+  engineOsc1 = audioCtx.createOscillator();
+  engineOsc2 = audioCtx.createOscillator();
+  engineOsc1.type = "sawtooth";
+  engineOsc2.type = "sawtooth";
+  engineOsc2.detune.value = 14;
+  const engineFilter = audioCtx.createBiquadFilter();
+  engineFilter.type = "lowpass";
+  engineFilter.frequency.value = 800;
+  engineGain = audioCtx.createGain();
+  engineGain.gain.value = 0;
+  engineOsc1.connect(engineFilter);
+  engineOsc2.connect(engineFilter);
+  engineFilter.connect(engineGain);
+  engineGain.connect(masterGain);
+  engineOsc1.start();
+  engineOsc2.start();
+
+  audioCtx.resume();
+}
+
+function setSoundEnabled(enabled) {
+  soundEnabled = enabled;
+  if (masterGain) {
+    masterGain.gain.setTargetAtTime(enabled ? 0.6 : 0, audioCtx.currentTime, 0.05);
+  }
+}
+
+function updateEngineSound() {
+  if (!audioCtx) return;
+  const flying = state.launched && !state.crashed && !state.landed;
+  const targetFreq = flying ? 55 + 70 * controls.throttle : 42;
+  const targetGain = flying ? 0.05 + 0.09 * controls.throttle : 0;
+  const t = audioCtx.currentTime;
+  engineOsc1.frequency.setTargetAtTime(targetFreq, t, 0.15);
+  engineOsc2.frequency.setTargetAtTime(targetFreq, t, 0.15);
+  engineGain.gain.setTargetAtTime(targetGain, t, 0.2);
+}
+
+function playRingChime() {
+  if (!audioCtx || !soundEnabled) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(1046.5, t);
+  osc.frequency.exponentialRampToValueAtTime(1568, t + 0.12);
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.exponentialRampToValueAtTime(0.35, t + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.start(t);
+  osc.stop(t + 0.4);
+}
+
+function playCrashSound() {
+  if (!audioCtx || !soundEnabled) return;
+  const t = audioCtx.currentTime;
+
+  const bufferSize = Math.floor(audioCtx.sampleRate * 0.4);
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = buffer;
+  const noiseFilter = audioCtx.createBiquadFilter();
+  noiseFilter.type = "lowpass";
+  noiseFilter.frequency.setValueAtTime(3000, t);
+  noiseFilter.frequency.exponentialRampToValueAtTime(200, t + 0.4);
+  const noiseGain = audioCtx.createGain();
+  noiseGain.gain.setValueAtTime(0.9, t);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+  noise.connect(noiseFilter);
+  noiseFilter.connect(noiseGain);
+  noiseGain.connect(masterGain);
+  noise.start(t);
+
+  const thud = audioCtx.createOscillator();
+  thud.type = "sine";
+  thud.frequency.setValueAtTime(130, t);
+  thud.frequency.exponentialRampToValueAtTime(35, t + 0.3);
+  const thudGain = audioCtx.createGain();
+  thudGain.gain.setValueAtTime(0.7, t);
+  thudGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+  thud.connect(thudGain);
+  thudGain.connect(masterGain);
+  thud.start(t);
+  thud.stop(t + 0.4);
+}
+
+function playVictoryFanfare() {
+  if (!audioCtx || !soundEnabled) return;
+  const t = audioCtx.currentTime;
+  const notes = [523.25, 659.25, 783.99, 1046.5]; // C5 E5 G5 C6
+  notes.forEach((freq, i) => {
+    const start = t + i * 0.12;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(freq, start);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.3, start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.5);
+    osc.connect(gain);
+    gain.connect(masterGain);
+    osc.start(start);
+    osc.stop(start + 0.55);
+  });
 }
 
 /* ------------------------------------------------------------------ *
@@ -710,12 +842,14 @@ function passRing() {
   const ring = rings[ringIndex];
   ring.passed = true;
   setRingVisualState(ring, "passed");
+  playRingChime();
   ringIndex++;
   if (ringIndex < rings.length) {
     setRingVisualState(rings[ringIndex], "active");
   } else {
     courseWon = true;
     showWinBanner();
+    playVictoryFanfare();
   }
 }
 
@@ -816,6 +950,10 @@ document.getElementById("btn-camera").addEventListener("click", () => {
   cameraMode = cameraMode === "chase" ? "cockpit" : "chase";
 });
 document.getElementById("btn-launch").addEventListener("click", resetState);
+document.getElementById("btn-sound").addEventListener("click", (e) => {
+  setSoundEnabled(!soundEnabled);
+  e.currentTarget.classList.toggle("active", soundEnabled);
+});
 
 setupJoystick(document.getElementById("stick-left"), input.left);
 setupJoystick(document.getElementById("stick-right"), input.right);
@@ -828,6 +966,7 @@ setupTilt();
 document.getElementById("btn-start").addEventListener("click", async () => {
   const overlay = document.getElementById("start-overlay");
   overlay.classList.add("hidden");
+  initAudio();
   try {
     if (document.documentElement.requestFullscreen) {
       await document.documentElement.requestFullscreen({ navigationUI: "hide" }).catch(() => {});
@@ -883,6 +1022,7 @@ function frame(now) {
 
   updateCamera(dt);
   updateHud();
+  updateEngineSound();
 
   renderer.render(scene, camera);
 }
@@ -893,5 +1033,8 @@ window.__sim = {
   state, controls, input, extractAttitude, resetState, physicsStep,
   rings, getRingIndex: () => ringIndex, isCourseWon: () => courseWon,
   propeller, camera, glider, wind,
+  initAudio, playRingChime, playCrashSound, playVictoryFanfare, setSoundEnabled,
+  getAudioCtx: () => audioCtx, isSoundEnabled: () => soundEnabled,
+  getEngineParams: () => ({ gain: engineGain.gain.value, freq: engineOsc1.frequency.value }),
 };
 })();

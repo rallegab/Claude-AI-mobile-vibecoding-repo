@@ -237,12 +237,27 @@ html, body {
   right: calc(env(safe-area-inset-right, 0px) + 72px);
   width: 56px;
 }
+#btn-sound {
+  top: calc(env(safe-area-inset-top, 0px) + 120px);
+  right: calc(env(safe-area-inset-right, 0px) + 134px);
+  width: 56px;
+}
 #btn-launch {
   top: calc(env(safe-area-inset-top, 0px) + 120px);
   left: calc(env(safe-area-inset-left, 0px) + 10px);
   padding: 10px 14px;
   color: #baffc9;
   border-color: rgba(140, 230, 160, 0.4);
+}
+
+/* Narrow portrait viewports: the centered wind dial's edges reach close
+   enough to the right-anchored button row to collide with it. There's
+   abundant vertical room in portrait, so drop the row below the dial
+   instead of fighting for horizontal space. */
+@media (orientation: portrait) {
+  #btn-camera, #btn-tilt, #btn-sound {
+    top: calc(env(safe-area-inset-top, 0px) + 195px);
+  }
 }
 
 .joystick {
