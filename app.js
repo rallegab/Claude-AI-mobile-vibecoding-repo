@@ -534,9 +534,12 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 const scene = new THREE.Scene();
 const skyColor = new THREE.Color(0x8fc7ea);
 scene.background = skyColor;
-scene.fog = new THREE.Fog(0xbfe0f5, 800, 6000);
+// Closer, thicker haze than the render distance below actually needs, so the
+// far edge of the terrain/backdrop is comfortably hidden well before it -
+// masking it instead of just pushing it further away.
+scene.fog = new THREE.Fog(0xbfe0f5, 600, 3200);
 
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 8000);
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 10000);
 
 const hemi = new THREE.HemisphereLight(0xffffff, 0x3a2c1a, 0.9);
 scene.add(hemi);
@@ -557,7 +560,7 @@ function createSkyDome() {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, 8, size);
   const tex = new THREE.CanvasTexture(c);
-  const geo = new THREE.SphereGeometry(5000, 24, 16);
+  const geo = new THREE.SphereGeometry(9000, 24, 16);
   const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false });
   return new THREE.Mesh(geo, mat);
 }
@@ -588,7 +591,7 @@ function createGroundTexture() {
   return tex;
 }
 
-/* --- Near terrain: gentle hills, farmland, villages, and roads --- */
+/* --- Near terrain: gentle hills, farmland, and villages --- */
 function smoothstep(edge0, edge1, x) {
   const t = THREE.MathUtils.clamp((x - edge0) / (edge1 - edge0), 0, 1);
   return t * t * (3 - 2 * t);
@@ -665,7 +668,7 @@ function fieldBlendAt(x, z) {
   return best ? { color: best.color, t: bestT } : null;
 }
 
-// Villages: cluster centers, later connected by roads back to the airfield.
+// Villages: cluster centers scattered around the terrain.
 const VILLAGE_COUNT = 6;
 const VILLAGES = [];
 for (let i = 0; i < VILLAGE_COUNT; i++) {
@@ -769,59 +772,6 @@ wallMesh.instanceColor.needsUpdate = true;
 roofMesh.instanceColor.needsUpdate = true;
 scene.add(wallMesh);
 scene.add(roofMesh);
-
-// Roads: one merged ribbon mesh connecting the airfield to every village via
-// a minimum-spanning tree (always extend from the nearest connected point),
-// so the network stays simple, connected, and cheap to draw in one call.
-function buildRoadNetwork(segments, width) {
-  const positions = [];
-  const indices = [];
-  let vertBase = 0;
-  const halfW = width / 2;
-  for (const [a, b] of segments) {
-    const steps = 12;
-    const perp = new THREE.Vector2(-(b.z - a.z), b.x - a.x).normalize();
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const x = a.x + (b.x - a.x) * t;
-      const z = a.z + (b.z - a.z) * t;
-      const y = terrainHeight(x, z) + 0.15;
-      positions.push(x + perp.x * halfW, y, z + perp.y * halfW);
-      positions.push(x - perp.x * halfW, y, z - perp.y * halfW);
-      if (i < steps) {
-        const i0 = vertBase + i * 2, i1 = i0 + 1, i2 = i0 + 2, i3 = i0 + 3;
-        indices.push(i0, i2, i1, i1, i2, i3);
-      }
-    }
-    vertBase += (steps + 1) * 2;
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-  return geo;
-}
-
-const roadSegments = [];
-const roadConnected = [{ x: 0, z: -20 }]; // airfield end of the runway
-const roadRemaining = VILLAGES.map((v) => ({ x: v.x, z: v.z }));
-while (roadRemaining.length) {
-  let bestI = 0, bestJ = 0, bestDist = Infinity;
-  for (let i = 0; i < roadConnected.length; i++) {
-    for (let j = 0; j < roadRemaining.length; j++) {
-      const d = Math.hypot(roadConnected[i].x - roadRemaining[j].x, roadConnected[i].z - roadRemaining[j].z);
-      if (d < bestDist) { bestDist = d; bestI = i; bestJ = j; }
-    }
-  }
-  roadSegments.push([roadConnected[bestI], roadRemaining[bestJ]]);
-  roadConnected.push(roadRemaining[bestJ]);
-  roadRemaining.splice(bestJ, 1);
-}
-const roadMesh = new THREE.Mesh(
-  buildRoadNetwork(roadSegments, 7),
-  new THREE.MeshLambertMaterial({ color: 0x8a7a5c })
-);
-scene.add(roadMesh);
 
 // Scattered markers for visual speed/motion reference
 const markerGeo = new THREE.ConeGeometry(3, 10, 5);
