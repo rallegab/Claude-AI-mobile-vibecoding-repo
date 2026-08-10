@@ -91,7 +91,8 @@ const controls = { aileron: 0, elevator: 0, rudder: 0, airbrake: 0, throttle: 1 
 
 const rings = []; // filled in by spawnRings() once the scene exists
 let ringIndex = 0;
-let courseWon = false;
+let ringsComplete = false; // all rings passed - still need to land to win
+let courseWon = false; // landed safely after clearing every ring
 
 /* ------------------------------------------------------------------ *
  *  Wind: a steady breeze plus layered, ever-changing gusts. Horizontal *
@@ -248,7 +249,13 @@ function checkGround() {
   state.angVel.set(0, 0, 0);
   if (gentle) {
     state.landed = true;
-    showMessage("LANDED", "#7fffb0");
+    if (ringsComplete) {
+      courseWon = true;
+      showWinBanner();
+      playVictoryFanfare();
+    } else {
+      showMessage("LANDED", "#7fffb0");
+    }
   } else {
     state.crashed = true;
     showMessage("CRASHED", "#ff6b6b");
@@ -597,7 +604,11 @@ function smoothstep(edge0, edge1, x) {
   return t * t * (3 - 2 * t);
 }
 
-const TERRAIN_SIZE = 6000;
+// Large enough that flying the full 8-ring course (which can reach ~3100m
+// from the airfield on its own) plus the return flight to land afterward
+// never approaches the edge - the hill wavelengths are long (~1700m+), so
+// this stays smooth despite the coarser per-segment size at this extent.
+const TERRAIN_SIZE = 14000;
 const TERRAIN_HALF = TERRAIN_SIZE / 2;
 
 // Distant flat backdrop, built as four strips framing a hole the exact size
@@ -683,7 +694,7 @@ for (let i = 0; i < VILLAGE_COUNT; i++) {
 
 const GRASS_COLOR = new THREE.Color(0x4f7a3d);
 
-const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, 90, 90);
+const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, 110, 110);
 terrainGeo.rotateX(-Math.PI / 2);
 const terrainPos = terrainGeo.attributes.position;
 const terrainColors = new Float32Array(terrainPos.count * 3);
@@ -962,6 +973,7 @@ function setRingVisualState(ring, stateName) {
 
 function spawnRings() {
   ringIndex = 0;
+  ringsComplete = false;
   courseWon = false;
   hideWinBanner();
 
@@ -993,7 +1005,7 @@ function spawnRings() {
 }
 
 function checkRingCrossing(prevPos, currPos) {
-  if (courseWon || ringIndex >= rings.length) return;
+  if (ringsComplete || ringIndex >= rings.length) return;
   const ring = rings[ringIndex];
   const d0 = prevPos.clone().sub(ring.center).dot(ring.normal);
   const d1 = currPos.clone().sub(ring.center).dot(ring.normal);
@@ -1012,9 +1024,8 @@ function passRing() {
   if (ringIndex < rings.length) {
     setRingVisualState(rings[ringIndex], "active");
   } else {
-    courseWon = true;
-    showWinBanner();
-    playVictoryFanfare();
+    ringsComplete = true;
+    showMessage("ALL RINGS CLEARED - LAND TO WIN!", "#ffe066");
   }
 }
 
@@ -1102,7 +1113,11 @@ function updateHud() {
   if (state.alpha > STALL_ALPHA && state.launched && !state.crashed && !state.landed) {
     showMessage("STALL", "#ff9d3d");
   } else if (!state.crashed && !state.landed && messageBanner.textContent === "STALL") {
-    hideMessage();
+    if (ringsComplete && !courseWon) {
+      showMessage("ALL RINGS CLEARED - LAND TO WIN!", "#ffe066");
+    } else {
+      hideMessage();
+    }
   }
 
   hudRingCount.textContent = Math.min(ringIndex, rings.length);
@@ -1181,7 +1196,7 @@ function frame(now) {
     propeller.rotation.z += dt * (8 + 24 * controls.throttle);
   }
 
-  if (!courseWon && ringIndex < rings.length) {
+  if (ringIndex < rings.length) {
     rings[ringIndex].torusMat.emissiveIntensity = 0.6 + 0.4 * Math.sin(now * 0.006);
   }
 
@@ -1197,6 +1212,7 @@ requestAnimationFrame(frame);
 window.__sim = {
   state, controls, input, extractAttitude, resetState, physicsStep,
   rings, getRingIndex: () => ringIndex, isCourseWon: () => courseWon,
+  isRingsComplete: () => ringsComplete,
   propeller, camera, glider, wind,
   initAudio, playRingChime, playCrashSound, playVictoryFanfare, setSoundEnabled,
   getAudioCtx: () => audioCtx, isSoundEnabled: () => soundEnabled,
