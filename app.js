@@ -584,18 +584,9 @@ function createGroundTexture() {
   }
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(300, 300);
   tex.anisotropy = 4;
   return tex;
 }
-
-// Distant flat backdrop - beyond the hilly near-terrain below and mostly
-// hidden by fog, it just keeps the horizon from looking like it ends.
-const groundGeo = new THREE.PlaneGeometry(30000, 30000);
-const groundMat = new THREE.MeshLambertMaterial({ map: createGroundTexture() });
-const ground = new THREE.Mesh(groundGeo, groundMat);
-ground.rotation.x = -Math.PI / 2;
-scene.add(ground);
 
 /* --- Near terrain: gentle hills, farmland, villages, and roads --- */
 function smoothstep(edge0, edge1, x) {
@@ -606,14 +597,38 @@ function smoothstep(edge0, edge1, x) {
 const TERRAIN_SIZE = 6000;
 const TERRAIN_HALF = TERRAIN_SIZE / 2;
 
-// Layered sine hills, shallow by design; flat within 150m of the runway so
-// takeoff/landing stays on level ground, and flat again past the patch edge
-// so it blends into the flat backdrop with no visible seam.
+// Distant flat backdrop, built as four strips framing a hole the exact size
+// of the near terrain patch below - rather than a single plane sitting
+// underneath it. An overlapping plane plus a tiny offset still z-fights at
+// long view distances (depth-buffer precision is poor way out here, with
+// an 8000-unit far plane), so the two meshes just never share any ground.
+const backdropTexBase = createGroundTexture();
+function makeBackdropStrip(width, depth, x, z) {
+  const tex = backdropTexBase.clone();
+  tex.needsUpdate = true;
+  tex.repeat.set(width / 100, depth / 100);
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, depth),
+    new THREE.MeshLambertMaterial({ map: tex })
+  );
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set(x, 0, z);
+  return mesh;
+}
+const BACKDROP_OUTER_HALF = 15000;
+scene.add(makeBackdropStrip(BACKDROP_OUTER_HALF * 2, BACKDROP_OUTER_HALF - TERRAIN_HALF, 0, TERRAIN_HALF + (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2));
+scene.add(makeBackdropStrip(BACKDROP_OUTER_HALF * 2, BACKDROP_OUTER_HALF - TERRAIN_HALF, 0, -TERRAIN_HALF - (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2));
+scene.add(makeBackdropStrip(BACKDROP_OUTER_HALF - TERRAIN_HALF, TERRAIN_SIZE, TERRAIN_HALF + (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2, 0));
+scene.add(makeBackdropStrip(BACKDROP_OUTER_HALF - TERRAIN_HALF, TERRAIN_SIZE, -TERRAIN_HALF - (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2, 0));
+
+// Layered sine hills, flat within 150m of the runway so takeoff/landing
+// stays on level ground, and flat again past the patch edge so it blends
+// into the flat backdrop with no visible seam.
 function terrainHeight(x, z) {
   const dist = Math.hypot(x, z);
-  const raw = 6 * Math.sin(x * 0.0011 + 1.3) * Math.cos(z * 0.0009 + 0.7)
-    + 4 * Math.sin(x * 0.0023 - 0.6) * Math.sin(z * 0.0017 + 2.1)
-    + 2.5 * Math.cos(x * 0.0037 + 2.8) * Math.cos(z * 0.0031 - 1.4);
+  const raw = 12 * Math.sin(x * 0.0011 + 1.3) * Math.cos(z * 0.0009 + 0.7)
+    + 8 * Math.sin(x * 0.0023 - 0.6) * Math.sin(z * 0.0017 + 2.1)
+    + 5 * Math.cos(x * 0.0037 + 2.8) * Math.cos(z * 0.0031 - 1.4);
   const edgeFalloff = 1 - smoothstep(TERRAIN_HALF * 0.72, TERRAIN_HALF * 0.98, dist);
   const runwayFlatten = smoothstep(150, 400, dist);
   return raw * edgeFalloff * runwayFlatten;
@@ -686,7 +701,6 @@ for (let i = 0; i < terrainPos.count; i++) {
 terrainGeo.setAttribute("color", new THREE.BufferAttribute(terrainColors, 3));
 terrainGeo.computeVertexNormals();
 const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }));
-terrain.position.y = 0.02; // clears the flat backdrop underneath, avoiding z-fighting
 scene.add(terrain);
 
 // Runway marker near the origin
