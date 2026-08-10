@@ -589,11 +589,105 @@ function createGroundTexture() {
   return tex;
 }
 
+// Distant flat backdrop - beyond the hilly near-terrain below and mostly
+// hidden by fog, it just keeps the horizon from looking like it ends.
 const groundGeo = new THREE.PlaneGeometry(30000, 30000);
 const groundMat = new THREE.MeshLambertMaterial({ map: createGroundTexture() });
 const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.rotation.x = -Math.PI / 2;
 scene.add(ground);
+
+/* --- Near terrain: gentle hills, farmland, villages, and roads --- */
+function smoothstep(edge0, edge1, x) {
+  const t = THREE.MathUtils.clamp((x - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+const TERRAIN_SIZE = 6000;
+const TERRAIN_HALF = TERRAIN_SIZE / 2;
+
+// Layered sine hills, shallow by design; flat within 150m of the runway so
+// takeoff/landing stays on level ground, and flat again past the patch edge
+// so it blends into the flat backdrop with no visible seam.
+function terrainHeight(x, z) {
+  const dist = Math.hypot(x, z);
+  const raw = 6 * Math.sin(x * 0.0011 + 1.3) * Math.cos(z * 0.0009 + 0.7)
+    + 4 * Math.sin(x * 0.0023 - 0.6) * Math.sin(z * 0.0017 + 2.1)
+    + 2.5 * Math.cos(x * 0.0037 + 2.8) * Math.cos(z * 0.0031 - 1.4);
+  const edgeFalloff = 1 - smoothstep(TERRAIN_HALF * 0.72, TERRAIN_HALF * 0.98, dist);
+  const runwayFlatten = smoothstep(150, 400, dist);
+  return raw * edgeFalloff * runwayFlatten;
+}
+
+// Farmland fields: rotated rectangles blended into the grass with a soft edge.
+const FIELD_COLORS = [0xd8c15a, 0xc9a63f, 0xdac788, 0xb8935a];
+const FIELDS = [];
+for (let i = 0; i < 13; i++) {
+  const angle = Math.random() * Math.PI * 2;
+  const dist = 350 + Math.random() * 2300;
+  FIELDS.push({
+    cx: Math.sin(angle) * dist,
+    cz: Math.cos(angle) * dist,
+    halfW: 45 + Math.random() * 90,
+    halfD: 40 + Math.random() * 80,
+    rot: Math.random() * Math.PI,
+    color: new THREE.Color(FIELD_COLORS[i % FIELD_COLORS.length]),
+  });
+}
+
+function fieldBlendAt(x, z) {
+  let best = null, bestT = 0;
+  const EDGE = 16;
+  for (const f of FIELDS) {
+    const dx = x - f.cx, dz = z - f.cz;
+    const cos = Math.cos(-f.rot), sin = Math.sin(-f.rot);
+    const lx = dx * cos - dz * sin, lz = dx * sin + dz * cos;
+    const tx = 1 - smoothstep(f.halfW - EDGE, f.halfW, Math.abs(lx));
+    const tz = 1 - smoothstep(f.halfD - EDGE, f.halfD, Math.abs(lz));
+    const t = Math.min(tx, tz);
+    if (t > bestT) { bestT = t; best = f; }
+  }
+  return best ? { color: best.color, t: bestT } : null;
+}
+
+// Villages: cluster centers, later connected by roads back to the airfield.
+const VILLAGE_COUNT = 6;
+const VILLAGES = [];
+for (let i = 0; i < VILLAGE_COUNT; i++) {
+  const angle = (i / VILLAGE_COUNT) * Math.PI * 2 + (Math.random() - 0.5) * 0.7;
+  const dist = 700 + Math.random() * 1900;
+  VILLAGES.push({
+    x: Math.sin(angle) * dist,
+    z: Math.cos(angle) * dist,
+    buildings: 6 + Math.floor(Math.random() * 8),
+  });
+}
+
+const GRASS_COLOR = new THREE.Color(0x4f7a3d);
+
+const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, 90, 90);
+terrainGeo.rotateX(-Math.PI / 2);
+const terrainPos = terrainGeo.attributes.position;
+const terrainColors = new Float32Array(terrainPos.count * 3);
+const tmpColor = new THREE.Color();
+for (let i = 0; i < terrainPos.count; i++) {
+  const x = terrainPos.getX(i);
+  const z = terrainPos.getZ(i);
+  terrainPos.setY(i, terrainHeight(x, z));
+
+  const field = fieldBlendAt(x, z);
+  tmpColor.copy(GRASS_COLOR);
+  if (field) tmpColor.lerp(field.color, field.t);
+  const jitter = 0.94 + Math.random() * 0.12;
+  terrainColors[i * 3] = tmpColor.r * jitter;
+  terrainColors[i * 3 + 1] = tmpColor.g * jitter;
+  terrainColors[i * 3 + 2] = tmpColor.b * jitter;
+}
+terrainGeo.setAttribute("color", new THREE.BufferAttribute(terrainColors, 3));
+terrainGeo.computeVertexNormals();
+const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }));
+terrain.position.y = 0.02; // clears the flat backdrop underneath, avoiding z-fighting
+scene.add(terrain);
 
 // Runway marker near the origin
 const runway = new THREE.Mesh(
@@ -610,6 +704,111 @@ for (let i = 0; i < 6; i++) {
   scene.add(stripe);
 }
 
+// Villages: simple boxes with pyramid roofs, instanced for performance.
+const buildingTotal = VILLAGES.reduce((sum, v) => sum + v.buildings, 0);
+const wallMesh = new THREE.InstancedMesh(
+  new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshStandardMaterial({ roughness: 0.85 }),
+  buildingTotal
+);
+const roofMesh = new THREE.InstancedMesh(
+  new THREE.ConeGeometry(0.8, 1, 4),
+  new THREE.MeshStandardMaterial({ roughness: 0.8 }),
+  buildingTotal
+);
+const WALL_COLORS = [0xc9b28a, 0xb5673a, 0xd8d8d0, 0xcfa96b];
+const ROOF_COLORS = [0x7a4632, 0x5a5f68, 0x8a3d30];
+const buildingDummy = new THREE.Object3D();
+const buildingColor = new THREE.Color();
+let buildingIdx = 0;
+for (const village of VILLAGES) {
+  for (let i = 0; i < village.buildings; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.random() * 110;
+    const x = village.x + Math.cos(a) * r;
+    const z = village.z + Math.sin(a) * r;
+    const w = 5 + Math.random() * 7;
+    const d = 5 + Math.random() * 7;
+    const h = 4 + Math.random() * 10;
+    const y = terrainHeight(x, z);
+    const rotY = Math.random() * Math.PI * 2;
+
+    buildingDummy.position.set(x, y + h / 2, z);
+    buildingDummy.rotation.set(0, rotY, 0);
+    buildingDummy.scale.set(w, h, d);
+    buildingDummy.updateMatrix();
+    wallMesh.setMatrixAt(buildingIdx, buildingDummy.matrix);
+    wallMesh.setColorAt(buildingIdx, buildingColor.setHex(WALL_COLORS[buildingIdx % WALL_COLORS.length]));
+
+    const roofH = 2.5 + Math.random() * 2;
+    buildingDummy.position.set(x, y + h + roofH / 2, z);
+    buildingDummy.rotation.set(0, rotY + Math.PI / 4, 0);
+    buildingDummy.scale.set(Math.max(w, d) * 0.8, roofH, Math.max(w, d) * 0.8);
+    buildingDummy.updateMatrix();
+    roofMesh.setMatrixAt(buildingIdx, buildingDummy.matrix);
+    roofMesh.setColorAt(buildingIdx, buildingColor.setHex(ROOF_COLORS[buildingIdx % ROOF_COLORS.length]));
+
+    buildingIdx++;
+  }
+}
+wallMesh.instanceColor.needsUpdate = true;
+roofMesh.instanceColor.needsUpdate = true;
+scene.add(wallMesh);
+scene.add(roofMesh);
+
+// Roads: one merged ribbon mesh connecting the airfield to every village via
+// a minimum-spanning tree (always extend from the nearest connected point),
+// so the network stays simple, connected, and cheap to draw in one call.
+function buildRoadNetwork(segments, width) {
+  const positions = [];
+  const indices = [];
+  let vertBase = 0;
+  const halfW = width / 2;
+  for (const [a, b] of segments) {
+    const steps = 12;
+    const perp = new THREE.Vector2(-(b.z - a.z), b.x - a.x).normalize();
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const x = a.x + (b.x - a.x) * t;
+      const z = a.z + (b.z - a.z) * t;
+      const y = terrainHeight(x, z) + 0.15;
+      positions.push(x + perp.x * halfW, y, z + perp.y * halfW);
+      positions.push(x - perp.x * halfW, y, z - perp.y * halfW);
+      if (i < steps) {
+        const i0 = vertBase + i * 2, i1 = i0 + 1, i2 = i0 + 2, i3 = i0 + 3;
+        indices.push(i0, i2, i1, i1, i2, i3);
+      }
+    }
+    vertBase += (steps + 1) * 2;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const roadSegments = [];
+const roadConnected = [{ x: 0, z: -20 }]; // airfield end of the runway
+const roadRemaining = VILLAGES.map((v) => ({ x: v.x, z: v.z }));
+while (roadRemaining.length) {
+  let bestI = 0, bestJ = 0, bestDist = Infinity;
+  for (let i = 0; i < roadConnected.length; i++) {
+    for (let j = 0; j < roadRemaining.length; j++) {
+      const d = Math.hypot(roadConnected[i].x - roadRemaining[j].x, roadConnected[i].z - roadRemaining[j].z);
+      if (d < bestDist) { bestDist = d; bestI = i; bestJ = j; }
+    }
+  }
+  roadSegments.push([roadConnected[bestI], roadRemaining[bestJ]]);
+  roadConnected.push(roadRemaining[bestJ]);
+  roadRemaining.splice(bestJ, 1);
+}
+const roadMesh = new THREE.Mesh(
+  buildRoadNetwork(roadSegments, 7),
+  new THREE.MeshLambertMaterial({ color: 0x8a7a5c })
+);
+scene.add(roadMesh);
+
 // Scattered markers for visual speed/motion reference
 const markerGeo = new THREE.ConeGeometry(3, 10, 5);
 const markerMat = new THREE.MeshLambertMaterial({ color: 0x2f4d2a });
@@ -618,8 +817,10 @@ const dummy = new THREE.Object3D();
 for (let i = 0; i < 260; i++) {
   const angle = Math.random() * Math.PI * 2;
   const r = 150 + Math.random() * 2800;
-  dummy.position.set(Math.cos(angle) * r, 5, Math.sin(angle) * r);
-  dummy.scale.setScalar(0.6 + Math.random() * 1.6);
+  const x = Math.cos(angle) * r, z = Math.sin(angle) * r;
+  const scale = 0.6 + Math.random() * 1.6;
+  dummy.position.set(x, terrainHeight(x, z) + 5 * scale, z);
+  dummy.scale.setScalar(scale);
   dummy.rotation.y = Math.random() * Math.PI * 2;
   dummy.updateMatrix();
   markerMesh.setMatrixAt(i, dummy.matrix);
@@ -1036,5 +1237,6 @@ window.__sim = {
   initAudio, playRingChime, playCrashSound, playVictoryFanfare, setSoundEnabled,
   getAudioCtx: () => audioCtx, isSoundEnabled: () => soundEnabled,
   getEngineParams: () => ({ gain: engineGain.gain.value, freq: engineOsc1.frequency.value }),
+  VILLAGES, FIELDS, terrainHeight, scene,
 };
 })();
