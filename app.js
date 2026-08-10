@@ -1069,6 +1069,17 @@ const hudRingCount = document.getElementById("hud-ring-count");
 document.getElementById("hud-ring-total").textContent = rings.length;
 const windArrowEl = document.getElementById("wind-arrow");
 const hudWindSpeed = document.getElementById("hud-wind-speed");
+const runwayIndicatorEl = document.getElementById("runway-indicator");
+const runwayArrowEl = document.getElementById("runway-arrow");
+const hudRunwayDist = document.getElementById("hud-runway-dist");
+const RUNWAY_TARGET = { x: 0, z: -100 }; // center of the runway strip
+
+function normalizeAngle(a) {
+  a = a % (Math.PI * 2);
+  if (a > Math.PI) a -= Math.PI * 2;
+  if (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
 
 let messageTimer = null;
 function showMessage(text, color) {
@@ -1109,6 +1120,20 @@ function updateHud() {
   const windAngle = Math.atan2(wind.x, -wind.z);
   windArrowEl.style.transform = `rotate(${windAngle}rad)`;
   hudWindSpeed.textContent = Math.round(wind.length() * 3.6);
+
+  // Runway direction: shown only once all rings are cleared, since that's
+  // when the player needs to find their way back to land. Arrow is relative
+  // to the current heading (straight up = runway dead ahead) rather than an
+  // absolute compass bearing, so it reads as a direct "turn this way" cue.
+  const showRunwayNav = ringsComplete && !courseWon && !state.crashed && !state.landed;
+  runwayIndicatorEl.classList.toggle("show", showRunwayNav);
+  if (showRunwayNav) {
+    const dx = RUNWAY_TARGET.x - state.pos.x;
+    const dz = RUNWAY_TARGET.z - state.pos.z;
+    const runwayBearing = Math.atan2(dx, -dz);
+    runwayArrowEl.style.transform = `rotate(${normalizeAngle(runwayBearing - heading)}rad)`;
+    hudRunwayDist.textContent = Math.round(Math.hypot(dx, dz));
+  }
 
   if (state.alpha > STALL_ALPHA && state.launched && !state.crashed && !state.landed) {
     showMessage("STALL", "#ff9d3d");

@@ -120,7 +120,7 @@ html, body {
   transform: translateX(-50%);
   text-align: center;
 }
-#wind-dial {
+.nav-dial {
   position: relative;
   width: 52px;
   height: 52px;
@@ -130,7 +130,7 @@ html, body {
   border: 1px solid rgba(140, 200, 230, 0.3);
   box-shadow: 0 2px 8px rgba(0,0,0,0.35);
 }
-#wind-arrow {
+.nav-arrow {
   position: absolute;
   inset: 0;
   transform-origin: 50% 50%;
@@ -147,7 +147,8 @@ html, body {
   border-bottom: 14px solid #ffcf40;
   transform: translateX(-50%);
 }
-#wind-readout {
+.runway-tri { border-bottom-color: #7fffb0; }
+.nav-readout {
   margin-top: 4px;
   font-size: 10px;
   font-weight: 700;
@@ -155,6 +156,29 @@ html, body {
   color: #9cc2d8;
   text-shadow: 0 1px 3px rgba(0,0,0,0.6);
 }
+.nav-tag {
+  margin-top: 1px;
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: #7fffb0;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
+
+/* Only shown once all rings are cleared and it's time to land. Stacked
+   below LAUNCH (same left offset) - top-anchored like LAUNCH itself, so
+   the gap to it stays consistent regardless of viewport height, and
+   there's no risk of it drifting into the joystick below in a short
+   landscape viewport the way a bottom-anchored position would. */
+#runway-indicator {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 168px);
+  left: calc(env(safe-area-inset-left, 0px) + 18px);
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s;
+}
+#runway-indicator.show { opacity: 1; }
 
 #message-banner {
   position: absolute;

@@ -41,10 +41,18 @@
   </div>
 
   <div id="wind-indicator">
-    <div id="wind-dial">
-      <div id="wind-arrow"><div class="arrow-tri"></div></div>
+    <div class="nav-dial">
+      <div id="wind-arrow" class="nav-arrow"><div class="arrow-tri"></div></div>
     </div>
-    <div id="wind-readout"><span id="hud-wind-speed">0</span> km/h</div>
+    <div class="nav-readout"><span id="hud-wind-speed">0</span> km/h</div>
+  </div>
+
+  <div id="runway-indicator">
+    <div class="nav-dial">
+      <div id="runway-arrow" class="nav-arrow"><div class="arrow-tri runway-tri"></div></div>
+    </div>
+    <div class="nav-readout"><span id="hud-runway-dist">0</span> m</div>
+    <div class="nav-tag">RUNWAY</div>
   </div>
 
   <div id="message-banner"></div>
@@ -91,7 +99,7 @@
       <li><b>TILT</b> &mdash; optional: steer by tilting your phone</li>
       <li><b>SND</b> &mdash; mute/unmute engine and effect sounds</li>
     </ul>
-    <p>Fly through all 8 rings, in order, then head back and land at the runway to win. A new random course spawns every launch. Watch the wind dial &mdash; gusty wind keeps shifting and will push you off course.</p>
+    <p>Fly through all 8 rings, in order, then head back and land at the runway to win. A new random course spawns every launch. Watch the wind dial &mdash; gusty wind keeps shifting and will push you off course. Once all rings are cleared, a green RUNWAY dial appears showing the way home.</p>
     <button id="btn-start">Tap to Start</button>
   </div>
 </div>
