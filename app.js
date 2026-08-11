@@ -117,6 +117,23 @@ function updateWind(dt) {
 const LOCAL_FWD = new V3(0, 0, -1);
 const LOCAL_RIGHT = new V3(1, 0, 0);
 const LOCAL_UP = new V3(0, 1, 0);
+const GRAVITY_FORCE = new V3(0, -MASS * G, 0); // constant, read-only - never mutated
+
+// Scratch objects reused every physicsStep call instead of allocating fresh
+// Vector3/Quaternion instances each time. Physics runs at a fixed 60Hz, so
+// the naive version was ~10 heap allocations per call, ~600/sec - enough
+// GC churn to risk periodic frame hitches on weaker hardware. Safe as long
+// as each is only ever "live" within a single synchronous call (true here).
+const _prevPos = new V3();
+const _qInv = new THREE.Quaternion();
+const _relativeVel = new V3();
+const _vBody = new V3();
+const _dir = new V3();
+const _liftDir = new V3();
+const _sideDir = new V3();
+const _aeroForce = new V3();
+const _qOmega = new THREE.Quaternion();
+const _qDot = new THREE.Quaternion();
 
 function resetState() {
   state.pos.set(0, LAUNCH_ALT, 0);
@@ -138,16 +155,17 @@ function physicsStep(dt) {
 
   updateWind(dt);
 
-  const prevPos = state.pos.clone();
+  _prevPos.copy(state.pos);
+  const prevPos = _prevPos;
   const q = state.quat;
-  const qInv = q.clone().invert();
-  const relativeVel = state.vel.clone().sub(wind); // airflow relative to the moving air mass, not the ground
-  const vBody = relativeVel.clone().applyQuaternion(qInv);
+  _qInv.copy(q).invert();
+  _relativeVel.copy(state.vel).sub(wind); // airflow relative to the moving air mass, not the ground
+  _vBody.copy(_relativeVel).applyQuaternion(_qInv);
 
-  const u = -vBody.z;              // forward speed
-  const w = -vBody.y;              // "downward" component in body frame
-  const v = vBody.x;               // sideways speed
-  const V_air = Math.max(relativeVel.length(), 0.01);
+  const u = -_vBody.z;              // forward speed
+  const w = -_vBody.y;              // "downward" component in body frame
+  const v = _vBody.x;               // sideways speed
+  const V_air = Math.max(_relativeVel.length(), 0.01);
 
   const alpha = Math.atan2(w, Math.max(u, 0.01));
   const beta = Math.atan2(v, Math.max(u, 0.01));
@@ -177,22 +195,20 @@ function physicsStep(dt) {
   const D = qDyn * S_WING * CD;
   const Y = qDyn * S_WING * CY;
 
-  const dir = vBody.lengthSq() > 1e-6 ? vBody.clone().normalize() : new V3(0, 0, -1);
-  let liftDir = LOCAL_UP.clone().sub(dir.clone().multiplyScalar(dir.dot(LOCAL_UP)));
-  liftDir = liftDir.lengthSq() > 1e-6 ? liftDir.normalize() : new V3(0, 1, 0);
-  let sideDir = LOCAL_RIGHT.clone().sub(dir.clone().multiplyScalar(dir.dot(LOCAL_RIGHT)));
-  sideDir = sideDir.lengthSq() > 1e-6 ? sideDir.normalize() : new V3(1, 0, 0);
+  if (_vBody.lengthSq() > 1e-6) { _dir.copy(_vBody).normalize(); } else { _dir.set(0, 0, -1); }
+  _liftDir.copy(LOCAL_UP).addScaledVector(_dir, -_dir.dot(LOCAL_UP));
+  if (_liftDir.lengthSq() > 1e-6) { _liftDir.normalize(); } else { _liftDir.set(0, 1, 0); }
+  _sideDir.copy(LOCAL_RIGHT).addScaledVector(_dir, -_dir.dot(LOCAL_RIGHT));
+  if (_sideDir.lengthSq() > 1e-6) { _sideDir.normalize(); } else { _sideDir.set(1, 0, 0); }
 
-  const aeroForceBody = dir.clone().multiplyScalar(-D)
-    .add(liftDir.multiplyScalar(L))
-    .add(sideDir.multiplyScalar(Y))
-    .add(LOCAL_FWD.clone().multiplyScalar(MAX_THRUST * controls.throttle));
-
-  const aeroForceWorld = aeroForceBody.applyQuaternion(q);
-  const gravityForce = new V3(0, -MASS * G, 0);
-  const totalForce = aeroForceWorld.add(gravityForce);
-  const accel = totalForce.multiplyScalar(1 / MASS);
-  state.vel.addScaledVector(accel, dt);
+  _aeroForce.copy(_dir).multiplyScalar(-D);
+  _aeroForce.addScaledVector(_liftDir, L);
+  _aeroForce.addScaledVector(_sideDir, Y);
+  _aeroForce.addScaledVector(LOCAL_FWD, MAX_THRUST * controls.throttle);
+  _aeroForce.applyQuaternion(q);
+  _aeroForce.add(GRAVITY_FORCE);
+  _aeroForce.multiplyScalar(1 / MASS);
+  state.vel.addScaledVector(_aeroForce, dt);
 
   // --- Moments (control + damping + stability) ---
   const V_safe = Math.max(V_air, 3);
@@ -214,12 +230,12 @@ function physicsStep(dt) {
 
   // --- Quaternion integration: dq/dt = 0.5 * q * omega ---
   const omega = state.angVel;
-  const qOmega = new THREE.Quaternion(omega.x, omega.y, omega.z, 0);
-  const qDot = q.clone().multiply(qOmega);
-  q.x += 0.5 * qDot.x * dt;
-  q.y += 0.5 * qDot.y * dt;
-  q.z += 0.5 * qDot.z * dt;
-  q.w += 0.5 * qDot.w * dt;
+  _qOmega.set(omega.x, omega.y, omega.z, 0);
+  _qDot.copy(q).multiply(_qOmega);
+  q.x += 0.5 * _qDot.x * dt;
+  q.y += 0.5 * _qDot.y * dt;
+  q.z += 0.5 * _qDot.z * dt;
+  q.w += 0.5 * _qDot.w * dt;
   q.normalize();
 
   state.pos.addScaledVector(state.vel, dt);
@@ -228,13 +244,15 @@ function physicsStep(dt) {
   checkGround();
 }
 
+const _attFwd = new V3();
+const _attRight = new V3();
 function extractAttitude() {
   const q = state.quat;
-  const worldFwd = LOCAL_FWD.clone().applyQuaternion(q);
-  const worldRight = LOCAL_RIGHT.clone().applyQuaternion(q);
-  const pitch = Math.asin(THREE.MathUtils.clamp(worldFwd.y, -1, 1));
-  const bank = Math.asin(THREE.MathUtils.clamp(-worldRight.y, -1, 1));
-  let heading = Math.atan2(worldFwd.x, -worldFwd.z);
+  _attFwd.copy(LOCAL_FWD).applyQuaternion(q);
+  _attRight.copy(LOCAL_RIGHT).applyQuaternion(q);
+  const pitch = Math.asin(THREE.MathUtils.clamp(_attFwd.y, -1, 1));
+  const bank = Math.asin(THREE.MathUtils.clamp(-_attRight.y, -1, 1));
+  let heading = Math.atan2(_attFwd.x, -_attFwd.z);
   if (heading < 0) heading += Math.PI * 2;
   return { pitch, bank, heading };
 }
@@ -407,10 +425,11 @@ function setupJoystick(rootEl, target) {
   const base = rootEl.querySelector(".joystick-base");
   let active = false;
   let pointerId = null;
+  let cachedRect = null; // re-queried once per drag, not on every pointermove
   const radius = 65;
 
   function move(clientX, clientY) {
-    const rect = base.getBoundingClientRect();
+    const rect = cachedRect;
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
     let dx = clientX - cx;
@@ -434,6 +453,7 @@ function setupJoystick(rootEl, target) {
   rootEl.addEventListener("pointerdown", (e) => {
     active = true;
     pointerId = e.pointerId;
+    cachedRect = base.getBoundingClientRect();
     rootEl.setPointerCapture(e.pointerId);
     move(e.clientX, e.clientY);
     e.preventDefault();
@@ -460,6 +480,7 @@ function setupThrottleSlider(rootEl, target) {
   const handle = rootEl.querySelector(".slider-handle");
   const track = rootEl.querySelector(".slider-track");
   let pointerId = null;
+  let cachedRect = null; // re-queried once per drag, not on every pointermove
 
   function applyVisual(value) {
     const pct = THREE.MathUtils.clamp(value, 0, 1) * 100;
@@ -468,7 +489,7 @@ function setupThrottleSlider(rootEl, target) {
   }
 
   function move(clientY) {
-    const rect = track.getBoundingClientRect();
+    const rect = cachedRect;
     const value = 1 - THREE.MathUtils.clamp((clientY - rect.top) / rect.height, 0, 1);
     target.throttle = value;
     applyVisual(value);
@@ -476,6 +497,7 @@ function setupThrottleSlider(rootEl, target) {
 
   rootEl.addEventListener("pointerdown", (e) => {
     pointerId = e.pointerId;
+    cachedRect = track.getBoundingClientRect();
     rootEl.setPointerCapture(e.pointerId);
     move(e.clientY);
     e.preventDefault();
@@ -535,7 +557,9 @@ function updateControlsFromInput() {
  *  Three.js scene                                                    *
  * ------------------------------------------------------------------ */
 const canvas = document.getElementById("scene");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+// stencil:false - nothing in this scene uses stencil testing, so skip
+// allocating that buffer.
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", stencil: false });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
 const scene = new THREE.Scene();
@@ -1004,15 +1028,18 @@ function spawnRings() {
   }
 }
 
+const _ringD0 = new V3();
+const _ringD1 = new V3();
+const _ringHit = new V3();
 function checkRingCrossing(prevPos, currPos) {
   if (ringsComplete || ringIndex >= rings.length) return;
   const ring = rings[ringIndex];
-  const d0 = prevPos.clone().sub(ring.center).dot(ring.normal);
-  const d1 = currPos.clone().sub(ring.center).dot(ring.normal);
+  const d0 = _ringD0.copy(prevPos).sub(ring.center).dot(ring.normal);
+  const d1 = _ringD1.copy(currPos).sub(ring.center).dot(ring.normal);
   if ((d0 > 0) === (d1 > 0)) return;
   const t = d0 / (d0 - d1);
-  const hit = prevPos.clone().lerp(currPos, t);
-  if (hit.distanceTo(ring.center) <= RING_HOLE_RADIUS) passRing();
+  _ringHit.copy(prevPos).lerp(currPos, t);
+  if (_ringHit.distanceTo(ring.center) <= RING_HOLE_RADIUS) passRing();
 }
 
 function passRing() {
@@ -1034,20 +1061,26 @@ let cameraMode = "chase"; // chase | cockpit
 const chaseOffset = new V3(0, 3.2, 11);
 const cockpitOffset = new V3(0, 0.55, -1.1);
 
+const _camDesired = new V3();
+const _camLookTarget = new V3();
+const _camFwd = new V3();
+const UP_OFFSET = new V3(0, 1, 0); // constant, read-only - never mutated
+
 function updateCamera(dt) {
   const q = glider.quaternion;
   if (cameraMode === "chase") {
-    const desired = chaseOffset.clone().applyQuaternion(q).add(glider.position);
-    camera.position.lerp(desired, 1 - Math.pow(0.001, dt));
-    const lookTarget = glider.position.clone().add(new V3(0, 1, 0));
+    _camDesired.copy(chaseOffset).applyQuaternion(q).add(glider.position);
+    camera.position.lerp(_camDesired, 1 - Math.pow(0.001, dt));
+    _camLookTarget.copy(glider.position).add(UP_OFFSET);
     camera.up.set(0, 1, 0);
-    camera.lookAt(lookTarget);
+    camera.lookAt(_camLookTarget);
   } else {
-    const desired = cockpitOffset.clone().applyQuaternion(q).add(glider.position);
-    camera.position.copy(desired);
-    const fwd = LOCAL_FWD.clone().applyQuaternion(q);
-    camera.up.copy(LOCAL_UP.clone().applyQuaternion(q));
-    camera.lookAt(desired.clone().add(fwd));
+    _camDesired.copy(cockpitOffset).applyQuaternion(q).add(glider.position);
+    camera.position.copy(_camDesired);
+    _camFwd.copy(LOCAL_FWD).applyQuaternion(q);
+    camera.up.copy(LOCAL_UP).applyQuaternion(q);
+    _camLookTarget.copy(_camDesired).add(_camFwd);
+    camera.lookAt(_camLookTarget);
   }
 }
 
