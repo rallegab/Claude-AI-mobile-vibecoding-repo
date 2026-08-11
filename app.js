@@ -579,7 +579,7 @@ scene.background = skyColor;
 // Closer, thicker haze than the render distance below actually needs, so the
 // far edge of the terrain/backdrop is comfortably hidden well before it -
 // masking it instead of just pushing it further away.
-scene.fog = new THREE.Fog(0xbfe0f5, 600, 3200);
+scene.fog = new THREE.Fog(0xbfe0f5, 600, 4200);
 
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 8000);
 
