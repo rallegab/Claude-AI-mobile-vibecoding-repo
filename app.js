@@ -87,6 +87,15 @@ const state = {
   beta: 0,
 };
 
+// Snapshot of state.pos/quat as of the physics step *before* the most recent
+// one. The render loop (which runs at a different, variable rate than the
+// fixed 60Hz physics steps) lerps/slerps between this and the current state
+// each frame instead of snapping straight to it - otherwise, on any frame
+// where the accumulator happens to produce zero or two steps instead of
+// one, the glider visibly holds still or jumps.
+const renderPrevPos = new V3().copy(state.pos);
+const renderPrevQuat = new THREE.Quaternion().copy(state.quat);
+
 const controls = { aileron: 0, elevator: 0, rudder: 0, airbrake: 0, throttle: 1 };
 
 const rings = []; // filled in by spawnRings() once the scene exists
@@ -144,6 +153,8 @@ function resetState() {
   state.launched = true;
   state.crashed = false;
   state.landed = false;
+  renderPrevPos.copy(state.pos);
+  renderPrevQuat.copy(state.quat);
   input.throttle = 1;
   if (throttleVisualUpdate) throttleVisualUpdate(1);
   hideMessage();
@@ -1241,12 +1252,19 @@ function frame(now) {
   updateControlsFromInput();
 
   while (accumulator >= FIXED_DT) {
+    renderPrevPos.copy(state.pos);
+    renderPrevQuat.copy(state.quat);
     physicsStep(FIXED_DT);
     accumulator -= FIXED_DT;
   }
 
-  glider.position.copy(state.pos);
-  glider.quaternion.copy(state.quat);
+  // Interpolate between the last two physics steps by how far into the next
+  // (not-yet-due) step the accumulator has drifted, so the glider's visual
+  // position/orientation advances smoothly every render frame regardless of
+  // how the variable render rate happens to align with the fixed 60Hz steps.
+  const renderAlpha = Math.min(accumulator / FIXED_DT, 1);
+  glider.position.lerpVectors(renderPrevPos, state.pos, renderAlpha);
+  glider.quaternion.copy(renderPrevQuat).slerp(state.quat, renderAlpha);
 
   if (state.launched && !state.crashed && !state.landed) {
     propeller.rotation.z += dt * (8 + 24 * controls.throttle);
