@@ -48,7 +48,8 @@ const STALL_SPEED = Math.sqrt((2 * MASS * G) / (RHO * S_WING * (CL0 + CLALPHA * 
 const LAUNCH_ALT = 400;
 const LAUNCH_SPEED = STALL_SPEED * 2.2; // close to the powered trim speed, to minimize the release transient
 
-const GROUND_LEVEL = 0;
+// Ground collision now samples the active level's terrain height field
+// directly (see terrainHeight / checkGround below) rather than a flat plane.
 
 /* ------------------------------------------------------------------ *
  *  Ring course                                                       *
@@ -109,8 +110,11 @@ let courseWon = false; // landed safely after clearing every ring
  *  are summed per axis so direction and strength both wander smoothly, *
  *  irregularly, and without ever exactly repeating on a short cycle.   *
  * ------------------------------------------------------------------ */
+// Both reassigned per level by buildLevel() below - Norway and Nepal blow
+// harder than Germany. WIND_MEAN is mutated in place via .set() rather than
+// reassigned, since updateWind()'s closure captures it by reference.
 const WIND_MEAN = new V3(3, 0, -2);   // steady prevailing breeze, m/s
-const WIND_GUST_AMPLITUDE = 4.5;      // m/s, layered on top of the mean
+let WIND_GUST_AMPLITUDE = 4.5;        // m/s, layered on top of the mean
 
 const wind = new V3();
 let windTime = 0;
@@ -144,8 +148,33 @@ const _aeroForce = new V3();
 const _qOmega = new THREE.Quaternion();
 const _qDot = new THREE.Quaternion();
 
+// Swapped out by buildLevel() to the active level's height-field function,
+// so everything that samples terrain (ground collision, ring placement,
+// scenery) automatically tracks whichever level is currently loaded without
+// needing to know about levels itself.
+let terrainHeight = () => 0;
+
+// Level progression: which level is loaded, and how far the player has
+// unlocked. Persisted in localStorage so progress survives a reload.
+let currentLevelIndex = 0;
+const LEVEL_UNLOCK_KEY = "gliderSimMaxUnlockedLevel";
+let maxUnlockedLevel = 0;
+try {
+  const stored = parseInt(localStorage.getItem(LEVEL_UNLOCK_KEY), 10);
+  if (!isNaN(stored)) maxUnlockedLevel = THREE.MathUtils.clamp(stored, 0, 2);
+} catch (e) { /* localStorage unavailable (e.g. private browsing) - default to 0 */ }
+
+function unlockNextLevel() {
+  const next = currentLevelIndex + 1;
+  if (next > 2 || next <= maxUnlockedLevel) return;
+  maxUnlockedLevel = next;
+  try { localStorage.setItem(LEVEL_UNLOCK_KEY, String(maxUnlockedLevel)); } catch (e) { /* ignore */ }
+  if (typeof refreshLevelSelectUI === "function") refreshLevelSelectUI();
+}
+
 function resetState() {
-  state.pos.set(0, LAUNCH_ALT, 0);
+  const groundAtSpawn = terrainHeight(0, 0);
+  state.pos.set(0, LAUNCH_ALT + groundAtSpawn, 0);
   const q = new THREE.Quaternion().setFromAxisAngle(new V3(0, 1, 0), 0);
   state.quat.copy(q);
   state.vel.set(0, -0.5, -LAUNCH_SPEED);
@@ -268,18 +297,36 @@ function extractAttitude() {
   return { pitch, bank, heading };
 }
 
+// Steepest slope (rise/run) the terrain is allowed to have at the touchdown
+// point for a landing to still count as "gentle" rather than a crash, even
+// if the aircraft's own vertical speed/attitude were otherwise fine - a
+// level touchdown on the side of a mountain still isn't a landing. Germany's
+// rolling hills never get anywhere near this (well under 0.1); mountain
+// flanks on Norway/Nepal are well past it.
+const SAFE_LANDING_SLOPE = 0.18;
+
+function terrainSlopeAt(x, z) {
+  const e = 3;
+  const hL = terrainHeight(x - e, z), hR = terrainHeight(x + e, z);
+  const hD = terrainHeight(x, z - e), hU = terrainHeight(x, z + e);
+  return Math.hypot((hR - hL) / (2 * e), (hU - hD) / (2 * e));
+}
+
 function checkGround() {
-  if (state.pos.y > GROUND_LEVEL + 0.05) return;
+  const groundY = terrainHeight(state.pos.x, state.pos.z);
+  if (state.pos.y > groundY + 0.05) return;
   const { pitch, bank } = extractAttitude();
   const vs = state.vel.y;
-  const gentle = vs > -4.5 && Math.abs(bank) < 0.35 && Math.abs(pitch) < 0.35;
-  state.pos.y = GROUND_LEVEL;
+  const slope = terrainSlopeAt(state.pos.x, state.pos.z);
+  const gentle = slope <= SAFE_LANDING_SLOPE && vs > -4.5 && Math.abs(bank) < 0.35 && Math.abs(pitch) < 0.35;
+  state.pos.y = groundY;
   state.vel.set(0, 0, 0);
   state.angVel.set(0, 0, 0);
   if (gentle) {
     state.landed = true;
     if (ringsComplete) {
       courseWon = true;
+      unlockNextLevel();
       showWinBanner();
       playVictoryFanfare();
     } else {
@@ -669,34 +716,10 @@ scene.add(makeBackdropStrip(BACKDROP_OUTER_HALF * 2, BACKDROP_OUTER_HALF - TERRA
 scene.add(makeBackdropStrip(BACKDROP_OUTER_HALF - TERRAIN_HALF, TERRAIN_SIZE, TERRAIN_HALF + (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2, 0));
 scene.add(makeBackdropStrip(BACKDROP_OUTER_HALF - TERRAIN_HALF, TERRAIN_SIZE, -TERRAIN_HALF - (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2, 0));
 
-// Layered sine hills, flat within 150m of the runway so takeoff/landing
-// stays on level ground, and flat again past the patch edge so it blends
-// into the flat backdrop with no visible seam.
-function terrainHeight(x, z) {
-  const dist = Math.hypot(x, z);
-  const raw = 12 * Math.sin(x * 0.0011 + 1.3) * Math.cos(z * 0.0009 + 0.7)
-    + 8 * Math.sin(x * 0.0023 - 0.6) * Math.sin(z * 0.0017 + 2.1)
-    + 5 * Math.cos(x * 0.0037 + 2.8) * Math.cos(z * 0.0031 - 1.4);
-  const edgeFalloff = 1 - smoothstep(TERRAIN_HALF * 0.72, TERRAIN_HALF * 0.98, dist);
-  const runwayFlatten = smoothstep(150, 400, dist);
-  return raw * edgeFalloff * runwayFlatten;
-}
-
-// Farmland fields: rotated rectangles blended into the grass with a soft edge.
+// Farmland fields: rotated rectangles blended into the grass with a soft
+// edge. Only populated by buildLevel() for levels with hasFarmland (Germany).
 const FIELD_COLORS = [0xd8c15a, 0xc9a63f, 0xdac788, 0xb8935a];
 const FIELDS = [];
-for (let i = 0; i < 13; i++) {
-  const angle = Math.random() * Math.PI * 2;
-  const dist = 350 + Math.random() * 2300;
-  FIELDS.push({
-    cx: Math.sin(angle) * dist,
-    cz: Math.cos(angle) * dist,
-    halfW: 45 + Math.random() * 90,
-    halfD: 40 + Math.random() * 80,
-    rot: Math.random() * Math.PI,
-    color: new THREE.Color(FIELD_COLORS[i % FIELD_COLORS.length]),
-  });
-}
 
 function fieldBlendAt(x, z) {
   let best = null, bestT = 0;
@@ -713,43 +736,152 @@ function fieldBlendAt(x, z) {
   return best ? { color: best.color, t: bestT } : null;
 }
 
-// Villages: cluster centers scattered around the terrain.
+// Villages: cluster centers scattered around the terrain. Only populated by
+// buildLevel() for levels with hasFarmland (Germany).
 const VILLAGE_COUNT = 6;
 const VILLAGES = [];
-for (let i = 0; i < VILLAGE_COUNT; i++) {
-  const angle = (i / VILLAGE_COUNT) * Math.PI * 2 + (Math.random() - 0.5) * 0.7;
-  const dist = 700 + Math.random() * 1900;
-  VILLAGES.push({
-    x: Math.sin(angle) * dist,
-    z: Math.cos(angle) * dist,
-    buildings: 6 + Math.floor(Math.random() * 8),
-  });
+
+/* ------------------------------------------------------------------ *
+ *  Levels: Germany (unchanged rolling farmland), Norway (higher hills +   *
+ *  moderate snow-capped mountains + stronger wind), Nepal (very high,     *
+ *  mountain-covered terrain + strongest, most turbulent wind). Each       *
+ *  level's terrain height is the same layered-sine hill base as Germany's *
+ *  original formula, just amplitude-scaled, plus a sum of dome-shaped     *
+ *  mountain bumps for the two harder levels.                              *
+ * ------------------------------------------------------------------ */
+function hillsBase(x, z, ampScale) {
+  return ampScale * (
+    12 * Math.sin(x * 0.0011 + 1.3) * Math.cos(z * 0.0009 + 0.7)
+    + 8 * Math.sin(x * 0.0023 - 0.6) * Math.sin(z * 0.0017 + 2.1)
+    + 5 * Math.cos(x * 0.0037 + 2.8) * Math.cos(z * 0.0031 - 1.4)
+  );
 }
 
-const GRASS_COLOR = new THREE.Color(0x4f7a3d);
-
-const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, 110, 110);
-terrainGeo.rotateX(-Math.PI / 2);
-const terrainPos = terrainGeo.attributes.position;
-const terrainColors = new Float32Array(terrainPos.count * 3);
-const tmpColor = new THREE.Color();
-for (let i = 0; i < terrainPos.count; i++) {
-  const x = terrainPos.getX(i);
-  const z = terrainPos.getZ(i);
-  terrainPos.setY(i, terrainHeight(x, z));
-
-  const field = fieldBlendAt(x, z);
-  tmpColor.copy(GRASS_COLOR);
-  if (field) tmpColor.lerp(field.color, field.t);
-  const jitter = 0.94 + Math.random() * 0.12;
-  terrainColors[i * 3] = tmpColor.r * jitter;
-  terrainColors[i * 3 + 1] = tmpColor.g * jitter;
-  terrainColors[i * 3 + 2] = tmpColor.b * jitter;
+function mountainBump(x, z, m) {
+  const dx = x - m.x, dz = z - m.z;
+  const d = Math.hypot(dx, dz);
+  if (d >= m.radius) return 0;
+  const t = 1 - smoothstep(0, m.radius, d); // 1 at center, 0 at the rim
+  return m.height * Math.pow(t, 1.5); // >1 exponent for steeper, more peak-like flanks
 }
-terrainGeo.setAttribute("color", new THREE.BufferAttribute(terrainColors, 3));
-terrainGeo.computeVertexNormals();
-const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshLambertMaterial({ vertexColors: true }));
-scene.add(terrain);
+
+function makeTerrainHeightFn(level) {
+  return function (x, z) {
+    const dist = Math.hypot(x, z);
+    let h = hillsBase(x, z, level.hillAmpScale);
+    for (const m of level.mountains) h += mountainBump(x, z, m);
+    const edgeFalloff = 1 - smoothstep(TERRAIN_HALF * 0.72, TERRAIN_HALF * 0.98, dist);
+    const runwayFlatten = smoothstep(150, 400, dist);
+    return h * edgeFalloff * runwayFlatten;
+  };
+}
+
+// Scatters mountains from a set of {count, height range, radius range, zone}
+// specs. "corridor" mountains sit within/near the ring course's typical
+// footprint (real in-flight hazards); "backdrop" mountains are placed at a
+// distance chosen to stay mostly inside the fog's full-opacity range (4200)
+// so they're still visible as dramatic scenery rather than fogged out
+// entirely. Both zones keep clear of the runway/launch area.
+function generateMountains(specs) {
+  const mountains = [];
+  for (const spec of specs) {
+    for (let i = 0; i < spec.count; i++) {
+      let x, z, tries = 0;
+      do {
+        if (spec.zone === "corridor") {
+          x = (Math.random() * 2 - 1) * 650;
+          z = -50 - Math.random() * 3750;
+        } else {
+          const angle = Math.random() * Math.PI * 2;
+          const r = 1400 + Math.random() * 1400;
+          x = Math.sin(angle) * r;
+          z = Math.cos(angle) * r;
+        }
+        tries++;
+      } while (Math.hypot(x, z) < 480 && tries < 20);
+      mountains.push({
+        x, z,
+        height: spec.heightMin + Math.random() * (spec.heightMax - spec.heightMin),
+        radius: spec.radiusMin + Math.random() * (spec.radiusMax - spec.radiusMin),
+      });
+    }
+  }
+  return mountains;
+}
+
+const LEVELS = [
+  {
+    name: "Germany", subtitle: "Rolling farmland",
+    hillAmpScale: 1, mountains: [],
+    windMean: { x: 3, y: 0, z: -2 }, windGust: 4.5,
+    hasFarmland: true, treeCount: 260, treeColor: 0x2f4d2a,
+    hasSnow: false, groundColor: 0x4f7a3d,
+  },
+  {
+    name: "Norway", subtitle: "High hills & snow peaks",
+    hillAmpScale: 3,
+    mountains: generateMountains([
+      { count: 3, heightMin: 140, heightMax: 260, radiusMin: 240, radiusMax: 380, zone: "corridor" },
+      { count: 3, heightMin: 500, heightMax: 820, radiusMin: 380, radiusMax: 600, zone: "backdrop" },
+    ]),
+    windMean: { x: 5, y: 0, z: -3.5 }, windGust: 7.5,
+    hasFarmland: false, treeCount: 90, treeColor: 0x2c4a30,
+    hasSnow: true, rockLine: 90, rockBand: 60, snowLine: 190, snowBand: 55,
+    groundColor: 0x5a7259, rockColor: 0x847d6f, snowColor: 0xf3f7fb,
+  },
+  {
+    name: "Nepal", subtitle: "Towering peaks, fierce wind",
+    hillAmpScale: 5,
+    mountains: generateMountains([
+      { count: 6, heightMin: 220, heightMax: 460, radiusMin: 260, radiusMax: 420, zone: "corridor" },
+      { count: 9, heightMin: 900, heightMax: 1700, radiusMin: 420, radiusMax: 700, zone: "backdrop" },
+    ]),
+    windMean: { x: 7, y: 0, z: -5 }, windGust: 11,
+    hasFarmland: false, treeCount: 0, treeColor: 0x000000,
+    hasSnow: true, rockLine: 110, rockBand: 70, snowLine: 220, snowBand: 60,
+    groundColor: 0x8a7a5c, rockColor: 0x8f8577, snowColor: 0xf5f8fb,
+  },
+];
+
+function buildTerrainMesh(level) {
+  // Extra resolution only matters (and is only worth the vertex cost) once
+  // there are mountains to actually shape - Germany stays at the original
+  // 110 segments, unchanged.
+  const segs = level.mountains.length > 0 ? 220 : 110;
+  const geo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, segs, segs);
+  geo.rotateX(-Math.PI / 2);
+  const posAttr = geo.attributes.position;
+  const colors = new Float32Array(posAttr.count * 3);
+  const baseColor = new THREE.Color(level.groundColor);
+  const rockColor = level.hasSnow ? new THREE.Color(level.rockColor) : null;
+  const snowColor = level.hasSnow ? new THREE.Color(level.snowColor) : null;
+  const tmpColor = new THREE.Color();
+  for (let i = 0; i < posAttr.count; i++) {
+    const x = posAttr.getX(i);
+    const z = posAttr.getZ(i);
+    const y = terrainHeight(x, z);
+    posAttr.setY(i, y);
+
+    tmpColor.copy(baseColor);
+    if (level.hasFarmland) {
+      const field = fieldBlendAt(x, z);
+      if (field) tmpColor.lerp(field.color, field.t);
+    }
+    if (level.hasSnow) {
+      const tRock = smoothstep(level.rockLine, level.rockLine + level.rockBand, y);
+      if (tRock > 0) tmpColor.lerp(rockColor, tRock);
+      const tSnow = smoothstep(level.snowLine, level.snowLine + level.snowBand, y);
+      if (tSnow > 0) tmpColor.lerp(snowColor, tSnow);
+    }
+    const jitter = 0.94 + Math.random() * 0.12;
+    colors[i * 3] = tmpColor.r * jitter;
+    colors[i * 3 + 1] = tmpColor.g * jitter;
+    colors[i * 3 + 2] = tmpColor.b * jitter;
+  }
+  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+  return new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+}
 
 // Runway marker near the origin
 const runway = new THREE.Mesh(
@@ -766,75 +898,151 @@ for (let i = 0; i < 6; i++) {
   scene.add(stripe);
 }
 
-// Villages: simple boxes with pyramid roofs, instanced for performance.
-const buildingTotal = VILLAGES.reduce((sum, v) => sum + v.buildings, 0);
-const wallMesh = new THREE.InstancedMesh(
-  new THREE.BoxGeometry(1, 1, 1),
-  new THREE.MeshLambertMaterial(),
-  buildingTotal
-);
-const roofMesh = new THREE.InstancedMesh(
-  new THREE.ConeGeometry(0.8, 1, 4),
-  new THREE.MeshLambertMaterial(),
-  buildingTotal
-);
+// Everything buildLevel() rebuilds per level (terrain, villages, markers)
+// lives under this group, so switching levels is just "dispose and clear
+// this group's children, then build the new ones" - the runway, backdrop,
+// sky dome and glider stay untouched since they're level-independent.
+const levelGroup = new THREE.Group();
+scene.add(levelGroup);
+
+function disposeLevelObject(obj) {
+  obj.traverse((o) => {
+    if (!o.isMesh && !o.isInstancedMesh) return;
+    o.geometry.dispose();
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) {
+      if (m.map) m.map.dispose();
+      m.dispose();
+    }
+  });
+}
+
 const WALL_COLORS = [0xc9b28a, 0xb5673a, 0xd8d8d0, 0xcfa96b];
 const ROOF_COLORS = [0x7a4632, 0x5a5f68, 0x8a3d30];
-const buildingDummy = new THREE.Object3D();
-const buildingColor = new THREE.Color();
-let buildingIdx = 0;
-for (const village of VILLAGES) {
-  for (let i = 0; i < village.buildings; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = Math.random() * 110;
-    const x = village.x + Math.cos(a) * r;
-    const z = village.z + Math.sin(a) * r;
-    const w = 5 + Math.random() * 7;
-    const d = 5 + Math.random() * 7;
-    const h = 4 + Math.random() * 10;
-    const y = terrainHeight(x, z);
-    const rotY = Math.random() * Math.PI * 2;
 
-    buildingDummy.position.set(x, y + h / 2, z);
-    buildingDummy.rotation.set(0, rotY, 0);
-    buildingDummy.scale.set(w, h, d);
-    buildingDummy.updateMatrix();
-    wallMesh.setMatrixAt(buildingIdx, buildingDummy.matrix);
-    wallMesh.setColorAt(buildingIdx, buildingColor.setHex(WALL_COLORS[buildingIdx % WALL_COLORS.length]));
+function buildVillages(level) {
+  const buildingTotal = VILLAGES.reduce((sum, v) => sum + v.buildings, 0);
+  if (buildingTotal === 0) return;
+  const wallMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial(), buildingTotal);
+  const roofMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(0.8, 1, 4), new THREE.MeshLambertMaterial(), buildingTotal);
+  const dummy = new THREE.Object3D();
+  const color = new THREE.Color();
+  let idx = 0;
+  for (const village of VILLAGES) {
+    for (let i = 0; i < village.buildings; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.random() * 110;
+      const x = village.x + Math.cos(a) * r;
+      const z = village.z + Math.sin(a) * r;
+      const w = 5 + Math.random() * 7;
+      const d = 5 + Math.random() * 7;
+      const h = 4 + Math.random() * 10;
+      const y = terrainHeight(x, z);
+      const rotY = Math.random() * Math.PI * 2;
 
-    const roofH = 2.5 + Math.random() * 2;
-    buildingDummy.position.set(x, y + h + roofH / 2, z);
-    buildingDummy.rotation.set(0, rotY + Math.PI / 4, 0);
-    buildingDummy.scale.set(Math.max(w, d) * 0.8, roofH, Math.max(w, d) * 0.8);
-    buildingDummy.updateMatrix();
-    roofMesh.setMatrixAt(buildingIdx, buildingDummy.matrix);
-    roofMesh.setColorAt(buildingIdx, buildingColor.setHex(ROOF_COLORS[buildingIdx % ROOF_COLORS.length]));
+      dummy.position.set(x, y + h / 2, z);
+      dummy.rotation.set(0, rotY, 0);
+      dummy.scale.set(w, h, d);
+      dummy.updateMatrix();
+      wallMesh.setMatrixAt(idx, dummy.matrix);
+      wallMesh.setColorAt(idx, color.setHex(WALL_COLORS[idx % WALL_COLORS.length]));
 
-    buildingIdx++;
+      const roofH = 2.5 + Math.random() * 2;
+      dummy.position.set(x, y + h + roofH / 2, z);
+      dummy.rotation.set(0, rotY + Math.PI / 4, 0);
+      dummy.scale.set(Math.max(w, d) * 0.8, roofH, Math.max(w, d) * 0.8);
+      dummy.updateMatrix();
+      roofMesh.setMatrixAt(idx, dummy.matrix);
+      roofMesh.setColorAt(idx, color.setHex(ROOF_COLORS[idx % ROOF_COLORS.length]));
+
+      idx++;
+    }
   }
+  wallMesh.instanceColor.needsUpdate = true;
+  roofMesh.instanceColor.needsUpdate = true;
+  levelGroup.add(wallMesh, roofMesh);
 }
-wallMesh.instanceColor.needsUpdate = true;
-roofMesh.instanceColor.needsUpdate = true;
-scene.add(wallMesh);
-scene.add(roofMesh);
 
-// Scattered markers for visual speed/motion reference
-const markerGeo = new THREE.ConeGeometry(3, 10, 5);
-const markerMat = new THREE.MeshLambertMaterial({ color: 0x2f4d2a });
-const markerMesh = new THREE.InstancedMesh(markerGeo, markerMat, 260);
-const dummy = new THREE.Object3D();
-for (let i = 0; i < 260; i++) {
-  const angle = Math.random() * Math.PI * 2;
-  const r = 150 + Math.random() * 2800;
-  const x = Math.cos(angle) * r, z = Math.sin(angle) * r;
-  const scale = 0.6 + Math.random() * 1.6;
-  dummy.position.set(x, terrainHeight(x, z) + 5 * scale, z);
-  dummy.scale.setScalar(scale);
-  dummy.rotation.y = Math.random() * Math.PI * 2;
-  dummy.updateMatrix();
-  markerMesh.setMatrixAt(i, dummy.matrix);
+// Scattered markers for visual speed/motion reference (trees). On
+// snow-capped levels they're kept below the rock line, since trees don't
+// grow out of bare rock or snow.
+function buildMarkers(level) {
+  if (level.treeCount <= 0) return;
+  const markerGeo = new THREE.ConeGeometry(3, 10, 5);
+  const markerMat = new THREE.MeshLambertMaterial({ color: level.treeColor });
+  const markerMesh = new THREE.InstancedMesh(markerGeo, markerMat, level.treeCount);
+  const dummy = new THREE.Object3D();
+  const treeCeiling = level.hasSnow ? level.rockLine : Infinity;
+  for (let i = 0; i < level.treeCount; i++) {
+    let x, z, y, tries = 0;
+    do {
+      const angle = Math.random() * Math.PI * 2;
+      const r = 150 + Math.random() * 2800;
+      x = Math.cos(angle) * r;
+      z = Math.sin(angle) * r;
+      y = terrainHeight(x, z);
+      tries++;
+    } while (y > treeCeiling && tries < 6);
+    const scale = 0.6 + Math.random() * 1.6;
+    dummy.position.set(x, y + 5 * scale, z);
+    dummy.scale.setScalar(scale);
+    dummy.rotation.y = Math.random() * Math.PI * 2;
+    dummy.updateMatrix();
+    markerMesh.setMatrixAt(i, dummy.matrix);
+  }
+  levelGroup.add(markerMesh);
 }
-scene.add(markerMesh);
+
+function buildLevel(idx) {
+  currentLevelIndex = idx;
+  const level = LEVELS[idx];
+
+  while (levelGroup.children.length) {
+    const child = levelGroup.children[levelGroup.children.length - 1];
+    disposeLevelObject(child);
+    levelGroup.remove(child);
+  }
+
+  terrainHeight = makeTerrainHeightFn(level);
+
+  FIELDS.length = 0;
+  VILLAGES.length = 0;
+  if (level.hasFarmland) {
+    for (let i = 0; i < 13; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 350 + Math.random() * 2300;
+      FIELDS.push({
+        cx: Math.sin(angle) * dist,
+        cz: Math.cos(angle) * dist,
+        halfW: 45 + Math.random() * 90,
+        halfD: 40 + Math.random() * 80,
+        rot: Math.random() * Math.PI,
+        color: new THREE.Color(FIELD_COLORS[i % FIELD_COLORS.length]),
+      });
+    }
+    for (let i = 0; i < VILLAGE_COUNT; i++) {
+      const angle = (i / VILLAGE_COUNT) * Math.PI * 2 + (Math.random() - 0.5) * 0.7;
+      const dist = 700 + Math.random() * 1900;
+      VILLAGES.push({
+        x: Math.sin(angle) * dist,
+        z: Math.cos(angle) * dist,
+        buildings: 6 + Math.floor(Math.random() * 8),
+      });
+    }
+  }
+
+  levelGroup.add(buildTerrainMesh(level));
+  buildVillages(level);
+  buildMarkers(level);
+
+  WIND_MEAN.set(level.windMean.x, level.windMean.y, level.windMean.z);
+  WIND_GUST_AMPLITUDE = level.windGust;
+
+  const hudLevelName = document.getElementById("hud-level-name");
+  if (hudLevelName) hudLevelName.textContent = level.name.toUpperCase();
+}
+
+buildLevel(0);
 
 /* --- Glider model, built from primitives, local -Z = forward --- */
 function buildGlider() {
@@ -1004,20 +1212,48 @@ function setRingVisualState(ring, stateName) {
   ring.torusMat.emissiveIntensity = c.intensity;
 }
 
+// Rings must stay above the local terrain with a safety margin - on
+// Germany's gentle hills this basically never engages (terrain there is
+// only ever a couple meters at most within the course footprint), but on
+// Norway/Nepal it pushes ring altitude up over any mountain that would
+// otherwise poke through the course. Retries a fresh random point a few
+// times first (rather than just clamping in place), so a ring doesn't end
+// up awkwardly hovering right over a peak's summit; falls back to a clamp
+// if nothing clearer turns up in time.
+const RING_MIN_CLEARANCE = 50;
+const RING_ALT_CEILING = LAUNCH_ALT + 220;
+
+function pickRingPoint(prevCursor, groundAtSpawn) {
+  let lateral, forward, altitude;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (!prevCursor) {
+      lateral = 0;
+      forward = -(300 + Math.random() * 150);
+      altitude = groundAtSpawn + LAUNCH_ALT - (60 + Math.random() * 70);
+    } else {
+      lateral = THREE.MathUtils.clamp(prevCursor.x + (Math.random() * 2 - 1) * 170, -420, 420);
+      forward = prevCursor.z - (200 + Math.random() * 180);
+      altitude = Math.max(groundAtSpawn + 70, prevCursor.y - (25 + Math.random() * 55));
+    }
+    const clearAlt = terrainHeight(lateral, forward) + RING_MIN_CLEARANCE;
+    if (altitude < clearAlt) altitude = clearAlt;
+    if (altitude <= RING_ALT_CEILING) return new V3(lateral, altitude, forward);
+  }
+  return new V3(lateral, Math.min(altitude, RING_ALT_CEILING), forward);
+}
+
 function spawnRings() {
   ringIndex = 0;
   ringsComplete = false;
   courseWon = false;
   hideWinBanner();
 
+  const groundAtSpawn = terrainHeight(0, 0);
   const points = [];
-  let cursor = new V3(0, LAUNCH_ALT - (60 + Math.random() * 70), -(300 + Math.random() * 150));
+  let cursor = pickRingPoint(null, groundAtSpawn);
   points.push(cursor.clone());
   for (let i = 1; i < rings.length; i++) {
-    const lateral = THREE.MathUtils.clamp(cursor.x + (Math.random() * 2 - 1) * 170, -420, 420);
-    const forward = cursor.z - (200 + Math.random() * 180);
-    const altitude = Math.max(70, cursor.y - (25 + Math.random() * 55));
-    cursor = new V3(lateral, altitude, forward);
+    cursor = pickRingPoint(cursor, groundAtSpawn);
     points.push(cursor.clone());
   }
 
@@ -1136,7 +1372,10 @@ function hideMessage() {
 
 function showWinBanner() {
   winTitleEl.textContent = WIN_TITLE;
-  winSubtitleEl.textContent = WIN_SUBTITLE;
+  const isLastLevel = currentLevelIndex === LEVELS.length - 1;
+  winSubtitleEl.textContent = isLastLevel
+    ? WIN_SUBTITLE
+    : `${LEVELS[currentLevelIndex + 1].name.toUpperCase()} UNLOCKED - TAP LEVEL`;
   winBanner.classList.add("show");
 }
 function hideWinBanner() {
@@ -1201,6 +1440,7 @@ document.getElementById("btn-sound").addEventListener("click", (e) => {
   setSoundEnabled(!soundEnabled);
   e.currentTarget.classList.toggle("active", soundEnabled);
 });
+document.getElementById("btn-levels").addEventListener("click", openLevelSelect);
 
 setupJoystick(document.getElementById("stick-left"), input.left);
 setupJoystick(document.getElementById("stick-right"), input.right);
@@ -1208,19 +1448,45 @@ throttleVisualUpdate = setupThrottleSlider(document.getElementById("throttle"), 
 setupTilt();
 
 /* ------------------------------------------------------------------ *
- *  Start overlay                                                     *
+ *  Start overlay / level select                                      *
  * ------------------------------------------------------------------ */
-document.getElementById("btn-start").addEventListener("click", async () => {
-  const overlay = document.getElementById("start-overlay");
-  overlay.classList.add("hidden");
-  initAudio();
-  try {
-    if (document.documentElement.requestFullscreen) {
-      await document.documentElement.requestFullscreen({ navigationUI: "hide" }).catch(() => {});
-    }
-  } catch (e) { /* ignore */ }
-  resetState();
-});
+const levelButtons = Array.from(document.querySelectorAll(".level-btn"));
+
+function refreshLevelSelectUI() {
+  for (const btn of levelButtons) {
+    const idx = parseInt(btn.dataset.level, 10);
+    const locked = idx > maxUnlockedLevel;
+    btn.classList.toggle("locked", locked);
+    btn.disabled = locked;
+  }
+}
+refreshLevelSelectUI();
+
+// Reopens the level picker at any time, pausing the current flight (physics
+// no-ops while state.launched is false, and the engine sound follows suit)
+// rather than trying to build a separate pause/resume flow - picking a
+// level always (re)starts that level fresh via resetState().
+function openLevelSelect() {
+  state.launched = false;
+  refreshLevelSelectUI();
+  document.getElementById("start-overlay").classList.remove("hidden");
+}
+
+for (const btn of levelButtons) {
+  btn.addEventListener("click", async () => {
+    const idx = parseInt(btn.dataset.level, 10);
+    if (idx > maxUnlockedLevel) return;
+    document.getElementById("start-overlay").classList.add("hidden");
+    initAudio();
+    try {
+      if (document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen({ navigationUI: "hide" }).catch(() => {});
+      }
+    } catch (e) { /* ignore */ }
+    buildLevel(idx);
+    resetState();
+  });
+}
 
 /* ------------------------------------------------------------------ *
  *  Resize                                                            *
@@ -1291,6 +1557,11 @@ window.__sim = {
   initAudio, playRingChime, playCrashSound, playVictoryFanfare, setSoundEnabled,
   getAudioCtx: () => audioCtx, isSoundEnabled: () => soundEnabled,
   getEngineParams: () => ({ gain: engineGain.gain.value, freq: engineOsc1.frequency.value }),
-  VILLAGES, FIELDS, terrainHeight, scene,
+  // terrainHeight is reassigned per level - expose a wrapper that always
+  // delegates to the current one, rather than capturing today's value.
+  VILLAGES, FIELDS, terrainHeight: (x, z) => terrainHeight(x, z), terrainSlopeAt, scene,
+  LEVELS, buildLevel, getCurrentLevel: () => currentLevelIndex,
+  getMaxUnlockedLevel: () => maxUnlockedLevel,
+  spawnRings, getRingCenters: () => rings.map((r) => r.center.clone()),
 };
 })();

@@ -62,11 +62,15 @@
     <div id="win-subtitle"></div>
   </div>
 
-  <div id="hud-rings" class="panel">RING <span id="hud-ring-count">0</span>/<span id="hud-ring-total">8</span></div>
+  <div id="hud-rings" class="panel">
+    <div id="hud-level-name">GERMANY</div>
+    <div>RING <span id="hud-ring-count">0</span>/<span id="hud-ring-total">8</span></div>
+  </div>
 
   <button id="btn-camera" class="icon-btn" aria-label="Toggle camera">CAM</button>
   <button id="btn-tilt" class="icon-btn" aria-label="Toggle tilt control">TILT</button>
   <button id="btn-sound" class="icon-btn active" aria-label="Toggle sound">SND</button>
+  <button id="btn-levels" class="icon-btn" aria-label="Level select">LEVEL</button>
   <button id="btn-launch" class="text-btn">LAUNCH</button>
 
   <div id="stick-left" class="joystick">
@@ -100,7 +104,24 @@
       <li><b>SND</b> &mdash; mute/unmute engine and effect sounds</li>
     </ul>
     <p>Fly through all 8 rings, in order, then head back and land at the runway to win. A new random course spawns every launch. Watch the wind dial &mdash; gusty wind keeps shifting and will push you off course. Once all rings are cleared, a green RUNWAY dial appears showing the way home.</p>
-    <button id="btn-start">Tap to Start</button>
+    <p>Three levels, each harder than the last &mdash; beat one to unlock the next. Tap <b>LEVEL</b> in-flight to come back here anytime.</p>
+    <div id="level-select">
+      <button class="level-btn" data-level="0">
+        <span class="level-num">1</span>
+        <span class="level-text"><span class="level-name">Germany</span><span class="level-sub">Rolling farmland</span></span>
+        <span class="level-lock">&#128274;</span>
+      </button>
+      <button class="level-btn" data-level="1">
+        <span class="level-num">2</span>
+        <span class="level-text"><span class="level-name">Norway</span><span class="level-sub">High hills &amp; snow peaks</span></span>
+        <span class="level-lock">&#128274;</span>
+      </button>
+      <button class="level-btn" data-level="2">
+        <span class="level-num">3</span>
+        <span class="level-text"><span class="level-name">Nepal</span><span class="level-sub">Towering peaks, fierce wind</span></span>
+        <span class="level-lock">&#128274;</span>
+      </button>
+    </div>
   </div>
 </div>
 

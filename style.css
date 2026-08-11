@@ -235,6 +235,17 @@ html, body {
   min-width: 0;
   padding: 6px 16px;
 }
+/* Deliberately smaller/narrower than the "RING x/8" line below it, so the
+   panel's width - and therefore whether it clears the throttle slider on
+   narrow portrait viewports - stays governed by that line, unchanged from
+   before levels existed. */
+#hud-level-name {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: #7fd0ff;
+  margin-bottom: 1px;
+}
 
 .icon-btn, .text-btn {
   position: absolute;
@@ -266,6 +277,11 @@ html, body {
   right: calc(env(safe-area-inset-right, 0px) + 134px);
   width: 56px;
 }
+#btn-levels {
+  top: calc(env(safe-area-inset-top, 0px) + 120px);
+  right: calc(env(safe-area-inset-right, 0px) + 196px);
+  width: 56px;
+}
 #btn-launch {
   top: calc(env(safe-area-inset-top, 0px) + 120px);
   left: calc(env(safe-area-inset-left, 0px) + 10px);
@@ -279,7 +295,7 @@ html, body {
    abundant vertical room in portrait, so drop the row below the dial
    instead of fighting for horizontal space. */
 @media (orientation: portrait) {
-  #btn-camera, #btn-tilt, #btn-sound {
+  #btn-camera, #btn-tilt, #btn-sound, #btn-levels {
     top: calc(env(safe-area-inset-top, 0px) + 195px);
   }
 }
@@ -378,11 +394,20 @@ html, body {
   justify-content: center;
   z-index: 100;
   padding: 20px;
+  overflow-y: auto;
 }
 #start-card {
   max-width: 420px;
+  width: 100%;
   color: #d7f0ff;
   text-align: center;
+  /* The level list adds enough content that short landscape viewports (most
+     phones in play orientation) can't fit it all - scroll within the card
+     rather than relying on the overlay's own scroll, so the vertical
+     centering behaves reasonably even when scrolling is needed. */
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 4px;
 }
 #start-card h1 {
   font-size: 24px;
@@ -401,18 +426,60 @@ html, body {
   margin: 18px 0;
   padding-left: 20px;
 }
-#btn-start {
-  margin-top: 10px;
-  padding: 14px 34px;
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  color: #06202e;
-  background: linear-gradient(#8fe0ff, #4fb0e8);
-  border: none;
-  border-radius: 30px;
-  cursor: pointer;
-  box-shadow: 0 4px 16px rgba(80, 180, 230, 0.4);
-}
-
 #start-overlay.hidden { display: none; }
+
+#level-select {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+}
+.level-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 16px;
+  background: linear-gradient(rgba(70, 160, 210, 0.28), rgba(50, 120, 165, 0.2));
+  border: 1px solid rgba(140, 210, 240, 0.4);
+  border-radius: 12px;
+  color: #d7f0ff;
+  text-align: left;
+  cursor: pointer;
+}
+.level-btn .level-num {
+  font-size: 18px;
+  font-weight: 900;
+  color: #8fe0ff;
+  width: 1.4em;
+  text-align: center;
+  flex-shrink: 0;
+}
+.level-btn .level-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+.level-btn .level-name {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+.level-btn .level-sub {
+  font-size: 11px;
+  color: #9cc2d8;
+  margin-top: 2px;
+}
+.level-btn .level-lock {
+  font-size: 16px;
+  opacity: 0;
+  flex-shrink: 0;
+}
+.level-btn.locked {
+  background: rgba(40, 55, 65, 0.35);
+  border-color: rgba(140, 170, 190, 0.2);
+  cursor: default;
+}
+.level-btn.locked .level-num,
+.level-btn.locked .level-name { color: #6f93a8; }
+.level-btn.locked .level-lock { opacity: 0.8; }
