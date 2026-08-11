@@ -618,7 +618,6 @@ function createGroundTexture() {
   }
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.anisotropy = 4;
   return tex;
 }
 
@@ -950,7 +949,6 @@ function makeTextTexture(text, size) {
   });
 
   const tex = new THREE.CanvasTexture(c);
-  tex.anisotropy = 4;
   return tex;
 }
 
