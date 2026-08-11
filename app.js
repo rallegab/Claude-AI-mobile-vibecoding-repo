@@ -737,7 +737,7 @@ for (let i = 0; i < terrainPos.count; i++) {
 }
 terrainGeo.setAttribute("color", new THREE.BufferAttribute(terrainColors, 3));
 terrainGeo.computeVertexNormals();
-const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }));
+const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshLambertMaterial({ vertexColors: true }));
 scene.add(terrain);
 
 // Runway marker near the origin
@@ -759,12 +759,12 @@ for (let i = 0; i < 6; i++) {
 const buildingTotal = VILLAGES.reduce((sum, v) => sum + v.buildings, 0);
 const wallMesh = new THREE.InstancedMesh(
   new THREE.BoxGeometry(1, 1, 1),
-  new THREE.MeshStandardMaterial({ roughness: 0.85 }),
+  new THREE.MeshLambertMaterial(),
   buildingTotal
 );
 const roofMesh = new THREE.InstancedMesh(
   new THREE.ConeGeometry(0.8, 1, 4),
-  new THREE.MeshStandardMaterial({ roughness: 0.8 }),
+  new THREE.MeshLambertMaterial(),
   buildingTotal
 );
 const WALL_COLORS = [0xc9b28a, 0xb5673a, 0xd8d8d0, 0xcfa96b];
