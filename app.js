@@ -570,7 +570,7 @@ scene.background = skyColor;
 // masking it instead of just pushing it further away.
 scene.fog = new THREE.Fog(0xbfe0f5, 600, 3200);
 
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 10000);
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 8000);
 
 const hemi = new THREE.HemisphereLight(0xffffff, 0x3a2c1a, 0.9);
 scene.add(hemi);
@@ -591,7 +591,7 @@ function createSkyDome() {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, 8, size);
   const tex = new THREE.CanvasTexture(c);
-  const geo = new THREE.SphereGeometry(9000, 24, 16);
+  const geo = new THREE.SphereGeometry(7000, 24, 16);
   const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false });
   return new THREE.Mesh(geo, mat);
 }
