@@ -559,7 +559,7 @@ function updateControlsFromInput() {
 const canvas = document.getElementById("scene");
 // stencil:false - nothing in this scene uses stencil testing, so skip
 // allocating that buffer.
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", stencil: false });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance", stencil: false });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
 const scene = new THREE.Scene();
