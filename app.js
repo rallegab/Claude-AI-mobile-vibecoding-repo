@@ -576,6 +576,28 @@ function setupThrottleSlider(rootEl, target) {
   return applyVisual;
 }
 
+// beta/gamma from DeviceOrientationEvent are relative to the device's own
+// physical (portrait-natural) frame, not the current visual orientation - so
+// used raw, tilt controls end up rotated 90 degrees whenever the page is
+// actually being viewed in landscape (which, per the manifest, is the only
+// orientation this game runs in). Remap them into screen-relative pitch/roll
+// using the current screen rotation angle.
+function getScreenAngle() {
+  if (screen.orientation && typeof screen.orientation.angle === "number") return screen.orientation.angle;
+  if (typeof window.orientation === "number") return window.orientation;
+  return 0;
+}
+
+function tiltAnglesForScreen(beta, gamma, angle) {
+  switch (angle) {
+    case 90: return { pitch: -gamma, roll: beta };
+    case -90:
+    case 270: return { pitch: gamma, roll: -beta };
+    case 180: return { pitch: -beta, roll: -gamma };
+    default: return { pitch: beta, roll: gamma };
+  }
+}
+
 function setupTilt() {
   const btn = document.getElementById("btn-tilt");
   btn.addEventListener("click", async () => {
@@ -591,12 +613,19 @@ function setupTilt() {
     btn.classList.toggle("active", tiltEnabled);
   });
 
+  // Rotating the phone mid-flight changes what beta/gamma mean relative to
+  // the screen, so a stale baseline captured under the old angle would throw
+  // the controls off - recalibrate to the new angle instead of carrying it
+  // forward.
+  window.addEventListener("orientationchange", () => { tiltBaseline = null; });
+
   window.addEventListener("deviceorientation", (e) => {
     if (!tiltEnabled) return;
     if (e.beta === null || e.gamma === null) return;
-    if (!tiltBaseline) tiltBaseline = { beta: e.beta, gamma: e.gamma };
-    const dPitch = THREE.MathUtils.clamp((e.beta - tiltBaseline.beta) / 30, -1, 1);
-    const dRoll = THREE.MathUtils.clamp((e.gamma - tiltBaseline.gamma) / 30, -1, 1);
+    const { pitch, roll } = tiltAnglesForScreen(e.beta, e.gamma, getScreenAngle());
+    if (!tiltBaseline) tiltBaseline = { pitch, roll };
+    const dPitch = THREE.MathUtils.clamp((pitch - tiltBaseline.pitch) / 30, -1, 1);
+    const dRoll = THREE.MathUtils.clamp((roll - tiltBaseline.roll) / 30, -1, 1);
     input.left.y = dPitch;
     input.left.x = dRoll;
   });
@@ -782,10 +811,22 @@ function makeTerrainHeightFn(level) {
 // distance chosen to stay mostly inside the fog's full-opacity range (4200)
 // so they're still visible as dramatic scenery rather than fogged out
 // entirely. Both zones keep clear of the runway/launch area.
+// The ring course's own footprint (see pickRingPoint below) - backdrop
+// mountains must stay clear of this box entirely (not just the runway),
+// since their footprints can reach 700m+ radius and are much taller than
+// the ring-clearance ceiling can accommodate. Corridor mountains are
+// allowed inside it by design (that's the actual in-flight hazard) and stay
+// short enough that ring placement can always clear them.
+const RING_CORRIDOR_X = 650;
+const RING_CORRIDOR_Z_MIN = -3800;
+const RING_CORRIDOR_Z_MAX = -50;
+
 function generateMountains(specs) {
   const mountains = [];
   for (const spec of specs) {
     for (let i = 0; i < spec.count; i++) {
+      const height = spec.heightMin + Math.random() * (spec.heightMax - spec.heightMin);
+      const radius = spec.radiusMin + Math.random() * (spec.radiusMax - spec.radiusMin);
       let x, z, tries = 0;
       do {
         if (spec.zone === "corridor") {
@@ -798,12 +839,13 @@ function generateMountains(specs) {
           z = Math.cos(angle) * r;
         }
         tries++;
-      } while (Math.hypot(x, z) < 480 && tries < 20);
-      mountains.push({
-        x, z,
-        height: spec.heightMin + Math.random() * (spec.heightMax - spec.heightMin),
-        radius: spec.radiusMin + Math.random() * (spec.radiusMax - spec.radiusMin),
-      });
+        const clearOfRunway = Math.hypot(x, z) >= 480 + radius;
+        const clearOfCorridor = spec.zone === "corridor" ||
+          Math.abs(x) > RING_CORRIDOR_X + radius ||
+          z < RING_CORRIDOR_Z_MIN - radius || z > RING_CORRIDOR_Z_MAX + radius;
+        if (clearOfRunway && clearOfCorridor) break;
+      } while (tries < 30);
+      mountains.push({ x, z, height, radius });
     }
   }
   return mountains;
@@ -1224,8 +1266,9 @@ const RING_MIN_CLEARANCE = 50;
 const RING_ALT_CEILING = LAUNCH_ALT + 220;
 
 function pickRingPoint(prevCursor, groundAtSpawn) {
-  let lateral, forward, altitude;
-  for (let attempt = 0; attempt < 8; attempt++) {
+  let best = null; // lowest-terrain candidate seen, in case nothing clears outright
+  for (let attempt = 0; attempt < 16; attempt++) {
+    let lateral, forward, altitude;
     if (!prevCursor) {
       lateral = 0;
       forward = -(300 + Math.random() * 150);
@@ -1235,11 +1278,18 @@ function pickRingPoint(prevCursor, groundAtSpawn) {
       forward = prevCursor.z - (200 + Math.random() * 180);
       altitude = Math.max(groundAtSpawn + 70, prevCursor.y - (25 + Math.random() * 55));
     }
-    const clearAlt = terrainHeight(lateral, forward) + RING_MIN_CLEARANCE;
+    const groundHere = terrainHeight(lateral, forward);
+    const clearAlt = groundHere + RING_MIN_CLEARANCE;
     if (altitude < clearAlt) altitude = clearAlt;
     if (altitude <= RING_ALT_CEILING) return new V3(lateral, altitude, forward);
+    if (!best || groundHere < best.groundHere) best = { lateral, forward, altitude, groundHere };
   }
-  return new V3(lateral, Math.min(altitude, RING_ALT_CEILING), forward);
+  // Every attempt needed more clearance than the ceiling allows (only
+  // possible if a mountain still ended up dominating this whole area) -
+  // fall back to whichever attempt had the lowest local terrain, clamped
+  // just above *that* ground rather than to a flat altitude, so the ring
+  // still never ends up buried below its own footing.
+  return new V3(best.lateral, Math.min(best.altitude, Math.max(best.groundHere + RING_MIN_CLEARANCE, RING_ALT_CEILING)), best.forward);
 }
 
 function spawnRings() {
@@ -1391,8 +1441,12 @@ function updateHud() {
   hudBank.textContent = Math.round(bank * 180 / Math.PI);
   hudPitch.textContent = Math.round(pitch * 180 / Math.PI);
 
+  // The horizon disc rotates opposite to bank - the little aircraft/wings
+  // symbol is the fixed reference, so as the real aircraft rolls right, the
+  // horizon (relative to that fixed symbol) appears to rotate left, just
+  // like a real attitude indicator.
   const pitchPx = THREE.MathUtils.clamp(pitch, -1.3, 1.3) * 70;
-  aiHorizon.style.transform = `translate(-50%, -50%) rotate(${bank}rad) translateY(${pitchPx}px)`;
+  aiHorizon.style.transform = `translate(-50%, -50%) rotate(${-bank}rad) translateY(${pitchPx}px)`;
   aiHorizon.style.top = "50%";
   aiHorizon.style.left = "50%";
 
