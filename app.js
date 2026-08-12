@@ -1423,6 +1423,13 @@ for (let i = 0; i < BOSS_PROJECTILE_COUNT; i++) {
 // lift, and the existing ground-collision/crash logic takes it from there.
 const BOSS_SPAWN_DISTANCE = 500;
 const BOSS_CRUISE_SPEED = 46;
+// How far behind the player the Baron settles once he's caught up - kept
+// tighter than a real WWI tail-chase distance would be so the normal chase
+// camera (which itself only trails the player by chaseOffset.z=11) can
+// actually keep him in frame; see the dynamic camera pullback in
+// updateCamera(), which also depends on this staying comfortably under its
+// own clamp ceiling.
+const BOSS_CHASE_DISTANCE = 35;
 const BOSS_FIRE_RANGE = 420;
 const BOSS_FIRE_INTERVAL_MIN = 1.3;
 const BOSS_FIRE_INTERVAL_MAX = 2.4;
@@ -1732,7 +1739,7 @@ function updateBoss(dt) {
   // pursuit position - rather than homing straight at the player's own
   // position, so the Baron reads as flying a pursuit curve, not teleporting.
   _bossFwd.copy(LOCAL_FWD).applyQuaternion(state.quat);
-  _bossChaseTarget.copy(state.pos).addScaledVector(_bossFwd, -55);
+  _bossChaseTarget.copy(state.pos).addScaledVector(_bossFwd, -BOSS_CHASE_DISTANCE);
   _bossChaseTarget.y += 12;
 
   // Simple terrain-avoidance: bias the chase target upward if the boss
@@ -1755,10 +1762,18 @@ function updateBoss(dt) {
   boss.quat.slerp(_bossDesiredQuat, 1 - Math.pow(0.0006, dt));
 
   _bossOwnFwd.copy(LOCAL_FWD).applyQuaternion(boss.quat);
-  const speed = THREE.MathUtils.clamp(
-    BOSS_CRUISE_SPEED * (1 + distToTarget / 400),
-    BOSS_CRUISE_SPEED * 0.75, BOSS_CRUISE_SPEED * 1.7
-  );
+  // Two-phase speed: a fast intercept while still far from the chase target
+  // (closing a 500m spawn gap at only a modest cruise-speed multiplier took
+  // over 10 seconds in testing - most of the encounter would pass with the
+  // Baron barely visible, let alone close enough to threaten), then easing
+  // down to a speed that holds a stable trailing position once close rather
+  // than continuing to close in and overshoot/oscillate around the player.
+  let speed;
+  if (distToTarget > 80) {
+    speed = THREE.MathUtils.clamp(distToTarget * 0.9, 90, 180);
+  } else {
+    speed = THREE.MathUtils.clamp(BOSS_CRUISE_SPEED + (distToTarget - 20) * 0.6, BOSS_CRUISE_SPEED * 0.6, BOSS_CRUISE_SPEED * 1.4);
+  }
   boss.vel.copy(_bossOwnFwd).multiplyScalar(speed);
   boss.pos.addScaledVector(boss.vel, dt);
 
@@ -1833,6 +1848,8 @@ const UP_OFFSET = new V3(0, 1, 0); // constant, read-only - never mutated
 
 const _bossRevealMid = new V3();
 const _bossRevealOffset = new V3();
+const _camChaseOffset = new V3();
+const _camBossVec = new V3();
 
 function updateCamera(dt) {
   // Brief cinematic cut when the boss first appears - a side-on shot
@@ -1844,17 +1861,41 @@ function updateCamera(dt) {
     boss.revealTimer -= dt;
     _bossRevealMid.copy(state.pos).add(boss.pos).multiplyScalar(0.5);
     _bossRevealOffset.set(state.pos.z - boss.pos.z, 0, -(state.pos.x - boss.pos.x));
-    if (_bossRevealOffset.lengthSq() < 1) _bossRevealOffset.set(60, 0, 0);
-    _bossRevealOffset.normalize().multiplyScalar(95);
-    _bossRevealOffset.y = 40;
+    // The Baron spawns BOSS_SPAWN_DISTANCE=500 away, so a fixed-size offset
+    // (however sensible for a close encounter) leaves both planes many tens
+    // of degrees off the center of frame at that range - scale the shot's
+    // distance with how far apart the two actually are, and widen the FOV
+    // too, so the framing holds regardless of exactly how far the pursuit
+    // has closed by the time this plays.
+    const separation = _bossRevealOffset.length();
+    if (separation < 1) _bossRevealOffset.set(60, 0, 0); else _bossRevealOffset.normalize();
+    _bossRevealOffset.multiplyScalar(Math.max(separation * 0.6, 60));
+    _bossRevealOffset.y = Math.max(separation * 0.3, 30);
     camera.position.copy(_bossRevealMid).add(_bossRevealOffset);
     camera.up.set(0, 1, 0);
     camera.lookAt(_bossRevealMid);
+    if (camera.fov !== 92) { camera.fov = 92; camera.updateProjectionMatrix(); }
     return;
   }
+  if (camera.fov !== 62) { camera.fov = 62; camera.updateProjectionMatrix(); }
   const q = glider.quaternion;
   if (cameraMode === "chase") {
-    _camDesired.copy(chaseOffset).applyQuaternion(q).add(glider.position);
+    // Normally the chase camera trails only chaseOffset.z (11) behind the
+    // player - far closer than where the Baron actually flies (chasing a
+    // point BOSS_CHASE_DISTANCE=35 behind), so left alone he'd sit permanently
+    // behind the camera itself and never enter the frame at all, not just
+    // briefly. While he's active, pull the camera back (and up a little)
+    // past however far behind the player he currently is, so he's always
+    // between the camera and the player - i.e. visibly in frame - rather
+    // than needing to guess a single fixed distance that works for every
+    // point in the chase.
+    _camChaseOffset.copy(chaseOffset);
+    if (boss.active) {
+      const bossDistBehind = _camBossVec.copy(state.pos).sub(boss.pos).length();
+      _camChaseOffset.z = THREE.MathUtils.clamp(bossDistBehind + 16, chaseOffset.z, 220);
+      _camChaseOffset.y = THREE.MathUtils.clamp(3.2 + _camChaseOffset.z * 0.12, chaseOffset.y, 22);
+    }
+    _camDesired.copy(_camChaseOffset).applyQuaternion(q).add(glider.position);
     camera.position.lerp(_camDesired, 1 - Math.pow(0.001, dt));
     _camLookTarget.copy(glider.position).add(UP_OFFSET);
     camera.up.set(0, 1, 0);
