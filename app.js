@@ -187,6 +187,7 @@ function resetState() {
   input.throttle = 1;
   if (throttleVisualUpdate) throttleVisualUpdate(1);
   hideMessage();
+  if (typeof resetBoss === "function") resetBoss();
   spawnRings();
 }
 
@@ -242,7 +243,7 @@ function physicsStep(dt) {
   if (_sideDir.lengthSq() > 1e-6) { _sideDir.normalize(); } else { _sideDir.set(1, 0, 0); }
 
   _aeroForce.copy(_dir).multiplyScalar(-D);
-  _aeroForce.addScaledVector(_liftDir, L);
+  _aeroForce.addScaledVector(_liftDir, L * boss.liftMultiplier);
   _aeroForce.addScaledVector(_sideDir, Y);
   _aeroForce.addScaledVector(LOCAL_FWD, MAX_THRUST * controls.throttle);
   _aeroForce.applyQuaternion(q);
@@ -282,6 +283,7 @@ function physicsStep(dt) {
 
   checkRingCrossing(prevPos, state.pos);
   checkGround();
+  if (boss.active) updateBoss(dt);
 }
 
 const _attFwd = new V3();
@@ -322,6 +324,7 @@ function checkGround() {
   state.pos.y = groundY;
   state.vel.set(0, 0, 0);
   state.angVel.set(0, 0, 0);
+  if (boss.active) { boss.active = false; stopBossMusic(); }
   if (gentle) {
     state.landed = true;
     if (ringsComplete) {
@@ -468,6 +471,177 @@ function playVictoryFanfare() {
     osc.start(start);
     osc.stop(start + 0.55);
   });
+}
+
+// One-shot dramatic sting for the Red Baron's reveal: a low cinematic boom,
+// a dissonant detuned-sawtooth chord stab through a bandpass filter for a
+// brassy edge, and a filtered noise "impact" on top.
+function playBossStinger() {
+  if (!audioCtx || !soundEnabled) return;
+  const t = audioCtx.currentTime;
+
+  const boom = audioCtx.createOscillator();
+  boom.type = "sine";
+  boom.frequency.setValueAtTime(110, t);
+  boom.frequency.exponentialRampToValueAtTime(38, t + 0.5);
+  const boomGain = audioCtx.createGain();
+  boomGain.gain.setValueAtTime(0.0001, t);
+  boomGain.gain.exponentialRampToValueAtTime(0.9, t + 0.03);
+  boomGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+  boom.connect(boomGain);
+  boomGain.connect(masterGain);
+  boom.start(t);
+  boom.stop(t + 1);
+
+  const chordFreqs = [110, 130.81, 164.81, 220]; // A2 minor-ish stack
+  chordFreqs.forEach((f, i) => {
+    const osc = audioCtx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.value = f;
+    osc.detune.value = (i - 1.5) * 6;
+    const filt = audioCtx.createBiquadFilter();
+    filt.type = "bandpass";
+    filt.frequency.value = f * 3;
+    filt.Q.value = 1.2;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.22, t + 0.04);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.4);
+    osc.connect(filt);
+    filt.connect(g);
+    g.connect(masterGain);
+    osc.start(t);
+    osc.stop(t + 1.5);
+  });
+
+  const bufferSize = Math.floor(audioCtx.sampleRate * 0.5);
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = buffer;
+  const noiseFilter = audioCtx.createBiquadFilter();
+  noiseFilter.type = "highpass";
+  noiseFilter.frequency.value = 800;
+  const noiseGain = audioCtx.createGain();
+  noiseGain.gain.setValueAtTime(0.5, t);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+  noise.connect(noiseFilter);
+  noiseFilter.connect(noiseGain);
+  noiseGain.connect(masterGain);
+  noise.start(t);
+}
+
+// Looping tense battle ostinato, driven by a simple fixed-tempo scheduler
+// (setInterval, not sample-accurate lookahead scheduling - fine for a
+// background loop rather than tightly synced music, consistent with the
+// rest of this game's audio). Routed through its own gain node into
+// masterGain so it still respects the mute toggle and can fade
+// independently of the engine drone.
+let bossMusicGain = null;
+let bossMusicTimer = null;
+let bossMusicStep = 0;
+
+function startBossMusic() {
+  if (!audioCtx || bossMusicTimer) return;
+  bossMusicGain = audioCtx.createGain();
+  bossMusicGain.gain.value = 0;
+  bossMusicGain.connect(masterGain);
+  bossMusicGain.gain.setTargetAtTime(soundEnabled ? 0.5 : 0, audioCtx.currentTime, 0.4);
+  bossMusicStep = 0;
+
+  const BEAT = 0.28;
+  const bassNotes = [55, 55, 65.41, 55]; // A1, A1, C2, A1 - driving ostinato
+
+  function playStep() {
+    if (!audioCtx || !bossMusicGain) return;
+    const t = audioCtx.currentTime;
+    const note = bassNotes[bossMusicStep % bassNotes.length];
+    const osc = audioCtx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.value = note;
+    const filt = audioCtx.createBiquadFilter();
+    filt.type = "lowpass";
+    filt.frequency.value = 500;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.6, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + BEAT * 0.9);
+    osc.connect(filt);
+    filt.connect(g);
+    g.connect(bossMusicGain);
+    osc.start(t);
+    osc.stop(t + BEAT);
+
+    if (bossMusicStep % 4 === 0) {
+      const stab = audioCtx.createOscillator();
+      stab.type = "sawtooth";
+      stab.frequency.value = 220;
+      const stabGain = audioCtx.createGain();
+      stabGain.gain.setValueAtTime(0.0001, t);
+      stabGain.gain.exponentialRampToValueAtTime(0.18, t + 0.02);
+      stabGain.gain.exponentialRampToValueAtTime(0.0001, t + BEAT * 1.8);
+      stab.connect(stabGain);
+      stabGain.connect(bossMusicGain);
+      stab.start(t);
+      stab.stop(t + BEAT * 2);
+    }
+
+    bossMusicStep++;
+  }
+  playStep();
+  bossMusicTimer = setInterval(playStep, BEAT * 1000);
+}
+
+function stopBossMusic() {
+  if (bossMusicTimer) {
+    clearInterval(bossMusicTimer);
+    bossMusicTimer = null;
+  }
+  if (bossMusicGain) {
+    const g = bossMusicGain;
+    if (audioCtx) g.gain.setTargetAtTime(0, audioCtx.currentTime, 0.3);
+    setTimeout(() => { try { g.disconnect(); } catch (e) { /* already gone */ } }, 800);
+    bossMusicGain = null;
+  }
+}
+
+function playBossCannonFire() {
+  if (!audioCtx || !soundEnabled) return;
+  const t = audioCtx.currentTime;
+  const bufferSize = Math.floor(audioCtx.sampleRate * 0.12);
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = buffer;
+  const filt = audioCtx.createBiquadFilter();
+  filt.type = "bandpass";
+  filt.frequency.value = 1800;
+  filt.Q.value = 0.8;
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.5, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+  noise.connect(filt);
+  filt.connect(g);
+  g.connect(masterGain);
+  noise.start(t);
+}
+
+function playBossHitSound() {
+  if (!audioCtx || !soundEnabled) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = "square";
+  osc.frequency.setValueAtTime(220, t);
+  osc.frequency.exponentialRampToValueAtTime(80, t + 0.18);
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.35, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+  osc.connect(g);
+  g.connect(masterGain);
+  osc.start(t);
+  osc.stop(t + 0.25);
 }
 
 /* ------------------------------------------------------------------ *
@@ -882,6 +1056,7 @@ const LEVELS = [
     hasFarmland: false, treeCount: 0, treeColor: 0x000000,
     hasSnow: true, rockLine: 110, rockBand: 70, snowLine: 220, snowBand: 60,
     groundColor: 0x8a7a5c, rockColor: 0x8f8577, snowColor: 0xf5f8fb,
+    hasBoss: true, // final level - the Red Baron shows up once all rings are cleared
   },
 ];
 
@@ -1039,6 +1214,11 @@ function buildLevel(idx) {
   currentLevelIndex = idx;
   const level = LEVELS[idx];
 
+  // Switching levels (e.g. via the LEVEL button mid-flight) must never leave
+  // a boss encounter, active projectiles, or a lift penalty carried over
+  // into whatever gets loaded next.
+  if (typeof resetBoss === "function") resetBoss();
+
   while (levelGroup.children.length) {
     const child = levelGroup.children[levelGroup.children.length - 1];
     disposeLevelObject(child);
@@ -1083,8 +1263,6 @@ function buildLevel(idx) {
   const hudLevelName = document.getElementById("hud-level-name");
   if (hudLevelName) hudLevelName.textContent = level.name.toUpperCase();
 }
-
-buildLevel(0);
 
 /* --- Glider model, built from primitives, local -Z = forward --- */
 function buildGlider() {
@@ -1160,6 +1338,114 @@ function buildPropeller() {
 const glider = buildGlider();
 scene.add(glider);
 const propeller = glider.userData.propeller;
+
+/* --- Red Baron: final-level boss, a red WWI biplane --- */
+function buildBossPlane() {
+  const group = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xaa1a1a, roughness: 0.45 });
+  const trimMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.5 });
+  const wingMat = new THREE.MeshStandardMaterial({ color: 0x8f1414, roughness: 0.5 });
+
+  const fuselage = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 4.0, 4, 8), bodyMat);
+  fuselage.rotation.x = Math.PI / 2;
+  group.add(fuselage);
+
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.36, 0.8, 8), trimMat);
+  nose.rotation.x = -Math.PI / 2;
+  nose.position.z = -2.6;
+  group.add(nose);
+
+  const upperWing = new THREE.Mesh(new THREE.BoxGeometry(9, 0.1, 1.1), wingMat);
+  upperWing.position.set(0, 1.05, 0);
+  group.add(upperWing);
+
+  const lowerWing = new THREE.Mesh(new THREE.BoxGeometry(7.8, 0.1, 1.0), wingMat);
+  lowerWing.position.set(0, -0.15, 0.15);
+  group.add(lowerWing);
+
+  for (const side of [-1, 1]) {
+    const strut = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.2, 0.08), trimMat);
+    strut.position.set(side * 3.1, 0.45, 0.05);
+    group.add(strut);
+  }
+
+  const stab = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.06, 0.5), wingMat);
+  stab.position.set(0, 0.15, 2.3);
+  group.add(stab);
+
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.7, 0.6), wingMat);
+  fin.position.set(0, 0.5, 2.35);
+  group.add(fin);
+
+  const bossPropeller = buildPropeller();
+  bossPropeller.position.set(0, 0, -3.0);
+  group.add(bossPropeller);
+  group.userData.propeller = bossPropeller;
+
+  group.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+  group.visible = false;
+  return group;
+}
+
+const bossPlane = buildBossPlane();
+scene.add(bossPlane);
+const bossPropeller = bossPlane.userData.propeller;
+
+// Pooled cannon-fire projectiles - fixed-size, reused rather than
+// allocated per shot. Geometry is pre-rotated so its long axis is local -Z,
+// matching quaternionFromForward()'s convention, so orienting a shot each
+// firing is just a quaternion assignment.
+const BOSS_PROJECTILE_COUNT = 14;
+const bossProjectileGeo = new THREE.CapsuleGeometry(0.16, 1.0, 3, 5);
+bossProjectileGeo.rotateX(Math.PI / 2);
+const bossProjectileMat = new THREE.MeshBasicMaterial({ color: 0xffdd55 });
+const bossProjectiles = [];
+for (let i = 0; i < BOSS_PROJECTILE_COUNT; i++) {
+  const mesh = new THREE.Mesh(bossProjectileGeo, bossProjectileMat);
+  mesh.visible = false;
+  scene.add(mesh);
+  bossProjectiles.push({ mesh, pos: new V3(), vel: new V3(), active: false, life: 0 });
+}
+
+// Final-boss encounter state. liftMultiplier is read directly by
+// physicsStep's lift calculation (always, at a default of 1 - so this is
+// zero-cost when no boss is active) rather than the game special-casing an
+// instant "shot down" state: enough hits genuinely zeroes the aircraft's
+// lift, and the existing ground-collision/crash logic takes it from there.
+const BOSS_SPAWN_DISTANCE = 500;
+const BOSS_CRUISE_SPEED = 46;
+const BOSS_FIRE_RANGE = 420;
+const BOSS_FIRE_INTERVAL_MIN = 1.3;
+const BOSS_FIRE_INTERVAL_MAX = 2.4;
+const BOSS_PROJECTILE_SPEED = 190;
+const BOSS_HIT_RADIUS = 6;
+const BOSS_MAX_HITS = 4;
+const BOSS_REVEAL_DURATION = 1.8;
+
+const boss = {
+  active: false,
+  pos: new V3(),
+  vel: new V3(),
+  quat: new THREE.Quaternion(),
+  hits: 0,
+  liftMultiplier: 1,
+  nextFireTime: 0,
+  revealTimer: 0,
+};
+let bossTime = 0; // sim-seconds accumulated while the boss is active - used for firing cadence instead of wall-clock time, so it stays correct under direct physicsStep-driven testing too
+
+function resetBoss() {
+  boss.active = false;
+  boss.hits = 0;
+  boss.liftMultiplier = 1;
+  boss.nextFireTime = 0;
+  boss.revealTimer = 0;
+  bossTime = 0;
+  bossPlane.visible = false;
+  for (const p of bossProjectiles) { p.active = false; p.mesh.visible = false; }
+  stopBossMusic();
+  if (typeof updateBossHud === "function") updateBossHud();
+}
 
 /* --- Ring course: five gates to fly through, in order --- */
 const RING_COLORS = {
@@ -1348,7 +1634,164 @@ function passRing() {
   } else {
     ringsComplete = true;
     showMessage("ALL RINGS CLEARED - LAND TO WIN!", "#ffe066");
+    spawnBoss();
   }
+}
+
+/* --- Red Baron boss encounter: pursuit AI + cannon fire --- */
+const _bossFwd = new V3();          // player's forward direction, recomputed each call
+const _bossChaseTarget = new V3();
+const _bossDesiredDir = new V3();
+const _bossWorldUp = new V3();
+const _bossRight = new V3();
+const _bossUpVec = new V3();
+const _bossBasis = new THREE.Matrix4();
+const _bossZAxis = new V3();
+const _bossDesiredQuat = new THREE.Quaternion();
+const _bossOwnFwd = new V3();
+const _bossAimPoint = new V3();
+const _bossAimDir = new V3();
+const _bossMuzzlePos = new V3();
+
+// Deliberately NOT quaternionFromForward() reused: that helper maps local
+// +Z to the given direction (correct for the ring/projectile geometry,
+// whose "pointy end" is baked in at +Z), but the boss plane is built like
+// the glider - local -Z is the nose. Reusing it here would face (and fly)
+// the boss backwards. This writes into pre-allocated scratch objects
+// instead of allocating new ones, too - runs every physics step while the
+// boss is active, so it needs to be allocation-free like the rest of the
+// hot path (quaternionFromForward only ever runs on rare, one-off calls).
+function bossQuatFromForward(forwardDir, outQuat) {
+  _bossWorldUp.set(0, 1, 0);
+  if (Math.abs(forwardDir.y) > 0.99) _bossWorldUp.set(1, 0, 0);
+  _bossRight.crossVectors(forwardDir, _bossWorldUp).normalize();
+  _bossZAxis.copy(forwardDir).negate(); // local +Z maps to -forwardDir, so local -Z (nose) maps to forwardDir
+  _bossUpVec.crossVectors(_bossZAxis, _bossRight).normalize();
+  _bossBasis.makeBasis(_bossRight, _bossUpVec, _bossZAxis);
+  outQuat.setFromRotationMatrix(_bossBasis);
+}
+
+function spawnBoss() {
+  const level = LEVELS[currentLevelIndex];
+  if (!level.hasBoss) return;
+
+  boss.active = true;
+  boss.hits = 0;
+  boss.liftMultiplier = 1;
+  bossTime = 0;
+  boss.nextFireTime = 2.2; // a beat of breathing room before the first shot
+  boss.revealTimer = BOSS_REVEAL_DURATION;
+
+  _bossFwd.copy(LOCAL_FWD).applyQuaternion(state.quat);
+  boss.pos.copy(state.pos).addScaledVector(_bossFwd, -BOSS_SPAWN_DISTANCE);
+  boss.pos.y += 20 + Math.random() * 30;
+  boss.pos.x += (Math.random() * 2 - 1) * 80;
+  bossQuatFromForward(_bossFwd, boss.quat);
+  boss.vel.copy(_bossFwd).multiplyScalar(BOSS_CRUISE_SPEED);
+
+  bossPlane.position.copy(boss.pos);
+  bossPlane.quaternion.copy(boss.quat);
+  bossPlane.visible = true;
+
+  playBossStinger();
+  startBossMusic();
+  if (typeof updateBossHud === "function") updateBossHud();
+}
+
+function updateBoss(dt) {
+  bossTime += dt;
+
+  // Chase a point behind-and-above the player - a classic "on your six"
+  // pursuit position - rather than homing straight at the player's own
+  // position, so the Baron reads as flying a pursuit curve, not teleporting.
+  _bossFwd.copy(LOCAL_FWD).applyQuaternion(state.quat);
+  _bossChaseTarget.copy(state.pos).addScaledVector(_bossFwd, -55);
+  _bossChaseTarget.y += 12;
+
+  // Simple terrain-avoidance: bias the chase target upward if the boss
+  // itself is getting close to the ground beneath it, so it climbs instead
+  // of flying into a mountainside on Nepal.
+  const groundBelowBoss = terrainHeight(boss.pos.x, boss.pos.z);
+  if (boss.pos.y < groundBelowBoss + 60) {
+    _bossChaseTarget.y = Math.max(_bossChaseTarget.y, groundBelowBoss + 120);
+  }
+
+  _bossDesiredDir.copy(_bossChaseTarget).sub(boss.pos);
+  const distToTarget = _bossDesiredDir.length();
+  if (distToTarget > 1e-3) _bossDesiredDir.multiplyScalar(1 / distToTarget);
+  else _bossDesiredDir.copy(_bossFwd);
+
+  bossQuatFromForward(_bossDesiredDir, _bossDesiredQuat);
+  // Exponential-decay turn rate, same framerate-independent pattern the
+  // chase camera already uses - avoids the boss snapping onto a new heading
+  // instantly while still turning briskly.
+  boss.quat.slerp(_bossDesiredQuat, 1 - Math.pow(0.0006, dt));
+
+  _bossOwnFwd.copy(LOCAL_FWD).applyQuaternion(boss.quat);
+  const speed = THREE.MathUtils.clamp(
+    BOSS_CRUISE_SPEED * (1 + distToTarget / 400),
+    BOSS_CRUISE_SPEED * 0.75, BOSS_CRUISE_SPEED * 1.7
+  );
+  boss.vel.copy(_bossOwnFwd).multiplyScalar(speed);
+  boss.pos.addScaledVector(boss.vel, dt);
+
+  bossPlane.position.copy(boss.pos);
+  bossPlane.quaternion.copy(boss.quat);
+  bossPropeller.rotation.z += dt * 26;
+
+  if (bossTime >= boss.nextFireTime) {
+    if (boss.pos.distanceTo(state.pos) <= BOSS_FIRE_RANGE) fireBossProjectile();
+    boss.nextFireTime = bossTime + BOSS_FIRE_INTERVAL_MIN + Math.random() * (BOSS_FIRE_INTERVAL_MAX - BOSS_FIRE_INTERVAL_MIN);
+  }
+
+  for (const p of bossProjectiles) {
+    if (!p.active) continue;
+    p.pos.addScaledVector(p.vel, dt);
+    p.life += dt;
+    p.mesh.position.copy(p.pos);
+    if (p.life > 6) {
+      p.active = false;
+      p.mesh.visible = false;
+      continue;
+    }
+    if (p.pos.distanceTo(state.pos) <= BOSS_HIT_RADIUS) {
+      p.active = false;
+      p.mesh.visible = false;
+      registerBossHit();
+    }
+  }
+}
+
+function fireBossProjectile() {
+  const slot = bossProjectiles.find((p) => !p.active);
+  if (!slot) return; // pool exhausted (very unlikely at this fire rate) - just skip this shot
+
+  _bossMuzzlePos.copy(_bossOwnFwd).multiplyScalar(3.2).add(boss.pos);
+
+  // Partial lead on the player's current velocity so shots feel aimed
+  // without being a perfect, unavoidable intercept.
+  const dist = _bossMuzzlePos.distanceTo(state.pos);
+  const leadTime = (dist / BOSS_PROJECTILE_SPEED) * 0.55;
+  _bossAimPoint.copy(state.pos).addScaledVector(state.vel, leadTime);
+  _bossAimDir.copy(_bossAimPoint).sub(_bossMuzzlePos).normalize();
+
+  slot.pos.copy(_bossMuzzlePos);
+  slot.vel.copy(_bossAimDir).multiplyScalar(BOSS_PROJECTILE_SPEED);
+  slot.life = 0;
+  slot.active = true;
+  slot.mesh.position.copy(slot.pos);
+  slot.mesh.quaternion.copy(quaternionFromForward(_bossAimDir));
+  slot.mesh.visible = true;
+  playBossCannonFire();
+}
+
+let bossHitFlashUntil = 0;
+function registerBossHit() {
+  boss.hits++;
+  boss.liftMultiplier = Math.max(0, 1 - boss.hits / BOSS_MAX_HITS);
+  bossHitFlashUntil = performance.now() + 700;
+  playBossHitSound();
+  if (typeof updateBossHud === "function") updateBossHud();
 }
 
 /* --- Camera rig --- */
@@ -1361,7 +1804,27 @@ const _camLookTarget = new V3();
 const _camFwd = new V3();
 const UP_OFFSET = new V3(0, 1, 0); // constant, read-only - never mutated
 
+const _bossRevealMid = new V3();
+const _bossRevealOffset = new V3();
+
 function updateCamera(dt) {
+  // Brief cinematic cut when the boss first appears - a side-on shot
+  // framing both aircraft together, rather than the normal chase view
+  // (which, following behind the player, wouldn't show the Baron spawning
+  // behind them at all) - sells the "surprise" reveal before handing
+  // control back to the normal camera.
+  if (boss.active && boss.revealTimer > 0) {
+    boss.revealTimer -= dt;
+    _bossRevealMid.copy(state.pos).add(boss.pos).multiplyScalar(0.5);
+    _bossRevealOffset.set(state.pos.z - boss.pos.z, 0, -(state.pos.x - boss.pos.x));
+    if (_bossRevealOffset.lengthSq() < 1) _bossRevealOffset.set(60, 0, 0);
+    _bossRevealOffset.normalize().multiplyScalar(95);
+    _bossRevealOffset.y = 40;
+    camera.position.copy(_bossRevealMid).add(_bossRevealOffset);
+    camera.up.set(0, 1, 0);
+    camera.lookAt(_bossRevealMid);
+    return;
+  }
   const q = glider.quaternion;
   if (cameraMode === "chase") {
     _camDesired.copy(chaseOffset).applyQuaternion(q).add(glider.position);
@@ -1400,6 +1863,8 @@ const hudWindSpeed = document.getElementById("hud-wind-speed");
 const runwayIndicatorEl = document.getElementById("runway-indicator");
 const runwayArrowEl = document.getElementById("runway-arrow");
 const hudRunwayDist = document.getElementById("hud-runway-dist");
+const hudBossRow = document.getElementById("hud-boss-row");
+const hudBossHits = document.getElementById("hud-boss-hits");
 const RUNWAY_TARGET = { x: 0, z: -100 }; // center of the runway strip
 
 function normalizeAngle(a) {
@@ -1470,9 +1935,13 @@ function updateHud() {
     hudRunwayDist.textContent = Math.round(Math.hypot(dx, dz));
   }
 
-  if (state.alpha > STALL_ALPHA && state.launched && !state.crashed && !state.landed) {
+  const flying = state.launched && !state.crashed && !state.landed;
+  if (state.alpha > STALL_ALPHA && flying) {
     showMessage("STALL", "#ff9d3d");
-  } else if (!state.crashed && !state.landed && messageBanner.textContent === "STALL") {
+  } else if (boss.active && flying && performance.now() < bossHitFlashUntil) {
+    showMessage("HIT!", "#ff3b3b");
+  } else if (!state.crashed && !state.landed &&
+    (messageBanner.textContent === "STALL" || messageBanner.textContent === "HIT!")) {
     if (ringsComplete && !courseWon) {
       showMessage("ALL RINGS CLEARED - LAND TO WIN!", "#ffe066");
     } else {
@@ -1481,6 +1950,11 @@ function updateHud() {
   }
 
   hudRingCount.textContent = Math.min(ringIndex, rings.length);
+}
+
+function updateBossHud() {
+  hudBossRow.style.display = boss.active ? "" : "none";
+  hudBossHits.textContent = boss.hits;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1617,5 +2091,15 @@ window.__sim = {
   LEVELS, buildLevel, getCurrentLevel: () => currentLevelIndex,
   getMaxUnlockedLevel: () => maxUnlockedLevel,
   spawnRings, getRingCenters: () => rings.map((r) => r.center.clone()),
+  boss, bossPlane, fireBossProjectile, updateCamera,
+  getBossProjectiles: () => bossProjectiles.map((p) => ({ active: p.active, pos: p.pos.clone() })),
 };
+
+// Deferred until the very end of the module - buildLevel()'s resetBoss()
+// call reaches into HUD DOM lookups and boss/scene objects declared
+// throughout the file, so this needs everything above to have already run
+// (requestAnimationFrame(frame) above is safe to call first regardless,
+// since the frame callback itself never runs synchronously - only on the
+// next paint, well after this line).
+buildLevel(0);
 })();
