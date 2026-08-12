@@ -1431,12 +1431,19 @@ const BOSS_CRUISE_SPEED = 46;
 // own clamp ceiling.
 const BOSS_CHASE_DISTANCE = 35;
 const BOSS_FIRE_RANGE = 420;
-const BOSS_FIRE_INTERVAL_MIN = 1.3;
-const BOSS_FIRE_INTERVAL_MAX = 2.4;
-const BOSS_PROJECTILE_SPEED = 190;
-const BOSS_HIT_RADIUS = 6;
+const BOSS_FIRE_INTERVAL_MIN = 1.8;
+const BOSS_FIRE_INTERVAL_MAX = 3.4;
+// Slow enough to visibly dodge at the close BOSS_CHASE_DISTANCE range
+// (~35-55m out): at the original 190, travel time there was under 0.3s -
+// essentially no reaction window regardless of aim. Combined with the aim
+// lead/spread below, shots are now a genuine "see it coming and juke"
+// threat instead of a near-unavoidable one.
+const BOSS_PROJECTILE_SPEED = 65;
+const BOSS_AIM_LEAD_FACTOR = 0.4; // how much of the player's current velocity to lead by - partial, not a perfect intercept
+const BOSS_AIM_SPREAD = 0.02; // random aim error per shot (unit-vector component jitter) - small enough that a straight-flying target still mostly gets hit, but a few meters of active dodging at the slower projectile speed reliably clears it
+const BOSS_HIT_RADIUS = 4.5;
 const BOSS_MAX_HITS = 4;
-const BOSS_REVEAL_DURATION = 1.8;
+const BOSS_REVEAL_DURATION = 1.5;
 
 const boss = {
   active: false,
@@ -1791,7 +1798,7 @@ function updateBoss(dt) {
     p.pos.addScaledVector(p.vel, dt);
     p.life += dt;
     p.mesh.position.copy(p.pos);
-    if (p.life > 6) {
+    if (p.life > 8) {
       p.active = false;
       p.mesh.visible = false;
       continue;
@@ -1810,12 +1817,17 @@ function fireBossProjectile() {
 
   _bossMuzzlePos.copy(_bossOwnFwd).multiplyScalar(3.2).add(boss.pos);
 
-  // Partial lead on the player's current velocity so shots feel aimed
-  // without being a perfect, unavoidable intercept.
+  // Partial lead on the player's current velocity, plus a bit of random aim
+  // error, so shots feel aimed without being a perfect, unavoidable
+  // intercept every time.
   const dist = _bossMuzzlePos.distanceTo(state.pos);
-  const leadTime = (dist / BOSS_PROJECTILE_SPEED) * 0.55;
+  const leadTime = (dist / BOSS_PROJECTILE_SPEED) * BOSS_AIM_LEAD_FACTOR;
   _bossAimPoint.copy(state.pos).addScaledVector(state.vel, leadTime);
   _bossAimDir.copy(_bossAimPoint).sub(_bossMuzzlePos).normalize();
+  _bossAimDir.x += (Math.random() * 2 - 1) * BOSS_AIM_SPREAD;
+  _bossAimDir.y += (Math.random() * 2 - 1) * BOSS_AIM_SPREAD;
+  _bossAimDir.z += (Math.random() * 2 - 1) * BOSS_AIM_SPREAD;
+  _bossAimDir.normalize();
 
   slot.pos.copy(_bossMuzzlePos);
   slot.vel.copy(_bossAimDir).multiplyScalar(BOSS_PROJECTILE_SPEED);
@@ -1852,29 +1864,23 @@ const _camChaseOffset = new V3();
 const _camBossVec = new V3();
 
 function updateCamera(dt) {
-  // Brief cinematic cut when the boss first appears - a side-on shot
-  // framing both aircraft together, rather than the normal chase view
-  // (which, following behind the player, wouldn't show the Baron spawning
-  // behind them at all) - sells the "surprise" reveal before handing
-  // control back to the normal camera.
+  // Brief cinematic cut when the boss first appears: a close chase-style
+  // shot on the Baron himself, not a wide shot trying to frame both
+  // aircraft together - he spawns BOSS_SPAWN_DISTANCE=500 away, so any
+  // camera far enough back to fit both planes in frame shrinks each to a
+  // handful of pixels against the terrain, effectively invisible despite
+  // technically being in the view frustum. A tight shot on just the Baron
+  // reads far better as a "here's your villain" reveal beat anyway.
   if (boss.active && boss.revealTimer > 0) {
     boss.revealTimer -= dt;
-    _bossRevealMid.copy(state.pos).add(boss.pos).multiplyScalar(0.5);
-    _bossRevealOffset.set(state.pos.z - boss.pos.z, 0, -(state.pos.x - boss.pos.x));
-    // The Baron spawns BOSS_SPAWN_DISTANCE=500 away, so a fixed-size offset
-    // (however sensible for a close encounter) leaves both planes many tens
-    // of degrees off the center of frame at that range - scale the shot's
-    // distance with how far apart the two actually are, and widen the FOV
-    // too, so the framing holds regardless of exactly how far the pursuit
-    // has closed by the time this plays.
-    const separation = _bossRevealOffset.length();
-    if (separation < 1) _bossRevealOffset.set(60, 0, 0); else _bossRevealOffset.normalize();
-    _bossRevealOffset.multiplyScalar(Math.max(separation * 0.6, 60));
-    _bossRevealOffset.y = Math.max(separation * 0.3, 30);
-    camera.position.copy(_bossRevealMid).add(_bossRevealOffset);
+    _bossOwnFwd.copy(LOCAL_FWD).applyQuaternion(boss.quat);
+    _bossRevealOffset.copy(_bossOwnFwd).multiplyScalar(-16);
+    _bossRevealOffset.y += 4;
+    camera.position.copy(boss.pos).add(_bossRevealOffset);
     camera.up.set(0, 1, 0);
+    _bossRevealMid.copy(boss.pos).add(UP_OFFSET);
     camera.lookAt(_bossRevealMid);
-    if (camera.fov !== 92) { camera.fov = 92; camera.updateProjectionMatrix(); }
+    if (camera.fov !== 62) { camera.fov = 62; camera.updateProjectionMatrix(); }
     return;
   }
   if (camera.fov !== 62) { camera.fov = 62; camera.updateProjectionMatrix(); }
@@ -2173,7 +2179,7 @@ window.__sim = {
   LEVELS, buildLevel, getCurrentLevel: () => currentLevelIndex,
   getMaxUnlockedLevel: () => maxUnlockedLevel,
   spawnRings, getRingCenters: () => rings.slice(0, activeRingCount).map((r) => r.center.clone()),
-  boss, bossPlane, fireBossProjectile, updateCamera,
+  boss, bossPlane, fireBossProjectile, updateCamera, updateBoss,
   getBossProjectiles: () => bossProjectiles.map((p) => ({ active: p.active, pos: p.pos.clone() })),
   getActiveRingCount: () => activeRingCount,
   isDebugMode: () => debugMode,
