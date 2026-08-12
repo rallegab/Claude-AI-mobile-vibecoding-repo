@@ -484,3 +484,48 @@ html, body {
 .level-btn.locked .level-num,
 .level-btn.locked .level-name { color: #6f93a8; }
 .level-btn.locked .level-lock { opacity: 0.8; }
+
+.debug-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-top: 14px;
+  padding: 8px 16px;
+  background: rgba(60, 50, 20, 0.25);
+  border: 1px dashed rgba(255, 190, 100, 0.4);
+  border-radius: 12px;
+  color: #d7f0ff;
+  text-align: left;
+  cursor: pointer;
+}
+.debug-toggle .debug-check {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 900;
+  color: transparent;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 190, 100, 0.5);
+  border-radius: 4px;
+}
+.debug-toggle .debug-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffcf7a;
+}
+.debug-toggle.active {
+  background: rgba(100, 75, 20, 0.4);
+  border-style: solid;
+}
+.debug-toggle.active .debug-check {
+  color: #ffcf7a;
+  background: rgba(255, 190, 100, 0.25);
+}

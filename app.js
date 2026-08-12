@@ -99,10 +99,19 @@ const renderPrevQuat = new THREE.Quaternion().copy(state.quat);
 
 const controls = { aileron: 0, elevator: 0, rudder: 0, airbrake: 0, throttle: 1 };
 
-const rings = []; // filled in by spawnRings() once the scene exists
+const rings = []; // filled in by spawnRings() once the scene exists (always 8, regardless of debug mode - see activeRingCount)
 let ringIndex = 0;
 let ringsComplete = false; // all rings passed - still need to land to win
 let courseWon = false; // landed safely after clearing every ring
+// How many of the 8 rings actually need to be cleared this course - normally
+// all of them, but debugMode collapses this to 1 on boss levels (see
+// spawnRings) so the boss fight can be reached and iterated on quickly
+// without re-flying the full ring course every time.
+let activeRingCount = 8; // reassigned by spawnRings() before any gameplay logic can consult it
+
+const DEBUG_MODE_KEY = "gliderSimDebugMode";
+let debugMode = false;
+try { debugMode = localStorage.getItem(DEBUG_MODE_KEY) === "1"; } catch (e) { /* localStorage unavailable - default to off */ }
 
 /* ------------------------------------------------------------------ *
  *  Wind: a steady breeze plus layered, ever-changing gusts. Horizontal *
@@ -1584,27 +1593,45 @@ function spawnRings() {
   courseWon = false;
   hideWinBanner();
 
+  // Debug mode collapses the course down to just the first ring on boss
+  // levels, so the Red Baron fight can be reached and iterated on directly
+  // instead of re-flying all 8 rings every time.
+  activeRingCount = (debugMode && LEVELS[currentLevelIndex].hasBoss) ? 1 : rings.length;
+  hudRingTotal.textContent = activeRingCount;
+
   const groundAtSpawn = terrainHeight(0, 0);
   const points = [];
   let cursor = pickRingPoint(null, groundAtSpawn);
   points.push(cursor.clone());
-  for (let i = 1; i < rings.length; i++) {
+  for (let i = 1; i < activeRingCount; i++) {
     cursor = pickRingPoint(cursor, groundAtSpawn);
     points.push(cursor.clone());
   }
 
   for (let i = 0; i < rings.length; i++) {
     const ring = rings[i];
+    if (i >= activeRingCount) {
+      ring.group.visible = false;
+      continue;
+    }
     const nextPoint = points[Math.min(i + 1, points.length - 1)];
-    const dir = i < points.length - 1
-      ? nextPoint.clone().sub(points[i]).normalize()
-      : points[i].clone().sub(points[i - 1]).normalize();
+    let dir;
+    if (i < points.length - 1) {
+      dir = nextPoint.clone().sub(points[i]).normalize();
+    } else if (i > 0) {
+      dir = points[i].clone().sub(points[i - 1]).normalize();
+    } else {
+      // Only one active ring (debug mode) - no adjacent point to derive a
+      // direction from, so just face the way the player launches.
+      dir = new V3(0, 0, -1);
+    }
 
     ring.center.copy(points[i]);
     ring.normal.copy(dir);
     ring.passed = false;
     ring.group.position.copy(points[i]);
     ring.group.quaternion.copy(quaternionFromForward(dir));
+    ring.group.visible = true;
     setRingVisualState(ring, i === 0 ? "active" : "upcoming");
   }
 }
@@ -1613,7 +1640,7 @@ const _ringD0 = new V3();
 const _ringD1 = new V3();
 const _ringHit = new V3();
 function checkRingCrossing(prevPos, currPos) {
-  if (ringsComplete || ringIndex >= rings.length) return;
+  if (ringsComplete || ringIndex >= activeRingCount) return;
   const ring = rings[ringIndex];
   const d0 = _ringD0.copy(prevPos).sub(ring.center).dot(ring.normal);
   const d1 = _ringD1.copy(currPos).sub(ring.center).dot(ring.normal);
@@ -1629,7 +1656,7 @@ function passRing() {
   setRingVisualState(ring, "passed");
   playRingChime();
   ringIndex++;
-  if (ringIndex < rings.length) {
+  if (ringIndex < activeRingCount) {
     setRingVisualState(rings[ringIndex], "active");
   } else {
     ringsComplete = true;
@@ -1857,7 +1884,8 @@ const winBanner = document.getElementById("win-banner");
 const winTitleEl = document.getElementById("win-title");
 const winSubtitleEl = document.getElementById("win-subtitle");
 const hudRingCount = document.getElementById("hud-ring-count");
-document.getElementById("hud-ring-total").textContent = rings.length;
+const hudRingTotal = document.getElementById("hud-ring-total");
+hudRingTotal.textContent = rings.length; // overwritten by spawnRings() once a course is picked, in case debug mode shrinks it
 const windArrowEl = document.getElementById("wind-arrow");
 const hudWindSpeed = document.getElementById("hud-wind-speed");
 const runwayIndicatorEl = document.getElementById("runway-indicator");
@@ -1949,7 +1977,7 @@ function updateHud() {
     }
   }
 
-  hudRingCount.textContent = Math.min(ringIndex, rings.length);
+  hudRingCount.textContent = Math.min(ringIndex, activeRingCount);
 }
 
 function updateBossHud() {
@@ -2016,6 +2044,19 @@ for (const btn of levelButtons) {
   });
 }
 
+// Debug mode: collapses boss-level ring courses down to just the first ring
+// (see spawnRings) so the Red Baron fight can be reached and re-tried
+// quickly. Persisted across reloads since it's a testing convenience you'd
+// otherwise have to re-enable constantly.
+const debugToggleBtn = document.getElementById("btn-debug");
+function setDebugMode(enabled) {
+  debugMode = enabled;
+  try { localStorage.setItem(DEBUG_MODE_KEY, enabled ? "1" : "0"); } catch (e) { /* ignore */ }
+  if (debugToggleBtn) debugToggleBtn.classList.toggle("active", enabled);
+}
+setDebugMode(debugMode); // reflect the persisted value in the UI on load
+debugToggleBtn.addEventListener("click", () => setDebugMode(!debugMode));
+
 /* ------------------------------------------------------------------ *
  *  Resize                                                            *
  * ------------------------------------------------------------------ */
@@ -2064,7 +2105,7 @@ function frame(now) {
     propeller.rotation.z += dt * (8 + 24 * controls.throttle);
   }
 
-  if (ringIndex < rings.length) {
+  if (ringIndex < activeRingCount) {
     rings[ringIndex].torusMat.emissiveIntensity = 0.6 + 0.4 * Math.sin(now * 0.006);
   }
 
@@ -2090,9 +2131,12 @@ window.__sim = {
   VILLAGES, FIELDS, terrainHeight: (x, z) => terrainHeight(x, z), terrainSlopeAt, scene,
   LEVELS, buildLevel, getCurrentLevel: () => currentLevelIndex,
   getMaxUnlockedLevel: () => maxUnlockedLevel,
-  spawnRings, getRingCenters: () => rings.map((r) => r.center.clone()),
+  spawnRings, getRingCenters: () => rings.slice(0, activeRingCount).map((r) => r.center.clone()),
   boss, bossPlane, fireBossProjectile, updateCamera,
   getBossProjectiles: () => bossProjectiles.map((p) => ({ active: p.active, pos: p.pos.clone() })),
+  getActiveRingCount: () => activeRingCount,
+  isDebugMode: () => debugMode,
+  setDebugMode: (v) => setDebugMode(v),
 };
 
 // Deferred until the very end of the module - buildLevel()'s resetBoss()
