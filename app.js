@@ -196,6 +196,7 @@ function resetState() {
   input.throttle = 1;
   if (throttleVisualUpdate) throttleVisualUpdate(1);
   hideMessage();
+  if (messageTimer) { clearTimeout(messageTimer); messageTimer = null; }
   if (typeof resetBoss === "function") resetBoss();
   spawnRings();
 }
@@ -1694,7 +1695,17 @@ function passRing() {
     setRingVisualState(rings[ringIndex], "active");
   } else {
     ringsComplete = true;
-    showMessage("ALL RINGS CLEARED - LAND TO WIN!", "#ffe066");
+    if (LEVELS[currentLevelIndex].hasBoss) {
+      // Hold off on the banner until the reveal cutscene is done, so it
+      // doesn't cover the Baron's entrance.
+      if (messageTimer) clearTimeout(messageTimer);
+      messageTimer = setTimeout(() => {
+        messageTimer = null;
+        if (!state.crashed && !state.landed) showMessage("ALL RINGS CLEARED - LAND TO WIN!", "#ffe066");
+      }, BOSS_REVEAL_DURATION * 1000);
+    } else {
+      showMessage("ALL RINGS CLEARED - LAND TO WIN!", "#ffe066");
+    }
     spawnBoss();
   }
 }
