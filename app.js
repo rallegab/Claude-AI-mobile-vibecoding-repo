@@ -1400,6 +1400,26 @@ const bossPlane = buildBossPlane();
 scene.add(bossPlane);
 const bossPropeller = bossPlane.userData.propeller;
 
+// Picture-in-picture camera: a small chase view locked onto the Baron
+// himself, rendered into a corner of the screen while he's active (after
+// the reveal cutscene ends). The main camera stays at its normal close
+// follow distance throughout - pulling it back to keep him in the main
+// view (an earlier approach) made the player's own glider too small and
+// distant to land precisely by, which is exactly when it matters most.
+// Aspect is set to match the PIP DOM frame's own size in renderBossPip().
+const bossCamera = new THREE.PerspectiveCamera(60, 130 / 95, 0.1, 8000);
+const bossPipOffset = new V3(0, 4, 13);
+const _bossPipDesired = new V3();
+const _bossPipLookTarget = new V3();
+
+function updateBossPipCamera() {
+  _bossPipDesired.copy(bossPipOffset).applyQuaternion(bossPlane.quaternion).add(bossPlane.position);
+  bossCamera.position.copy(_bossPipDesired);
+  bossCamera.up.set(0, 1, 0);
+  _bossPipLookTarget.copy(bossPlane.position).add(UP_OFFSET);
+  bossCamera.lookAt(_bossPipLookTarget);
+}
+
 // Pooled cannon-fire projectiles - fixed-size, reused rather than
 // allocated per shot. Geometry is pre-rotated so its long axis is local -Z,
 // matching quaternionFromForward()'s convention, so orienting a shot each
@@ -1438,7 +1458,7 @@ const BOSS_FIRE_INTERVAL_MAX = 3.4;
 // essentially no reaction window regardless of aim. Combined with the aim
 // lead/spread below, shots are now a genuine "see it coming and juke"
 // threat instead of a near-unavoidable one.
-const BOSS_PROJECTILE_SPEED = 65;
+const BOSS_PROJECTILE_SPEED = 90;
 const BOSS_AIM_LEAD_FACTOR = 0.4; // how much of the player's current velocity to lead by - partial, not a perfect intercept
 const BOSS_AIM_SPREAD = 0.02; // random aim error per shot (unit-vector component jitter) - small enough that a straight-flying target still mostly gets hit, but a few meters of active dodging at the slower projectile speed reliably clears it
 const BOSS_HIT_RADIUS = 4.5;
@@ -1860,8 +1880,6 @@ const UP_OFFSET = new V3(0, 1, 0); // constant, read-only - never mutated
 
 const _bossRevealMid = new V3();
 const _bossRevealOffset = new V3();
-const _camChaseOffset = new V3();
-const _camBossVec = new V3();
 
 function updateCamera(dt) {
   // Brief cinematic cut when the boss first appears: a close chase-style
@@ -1886,22 +1904,13 @@ function updateCamera(dt) {
   if (camera.fov !== 62) { camera.fov = 62; camera.updateProjectionMatrix(); }
   const q = glider.quaternion;
   if (cameraMode === "chase") {
-    // Normally the chase camera trails only chaseOffset.z (11) behind the
-    // player - far closer than where the Baron actually flies (chasing a
-    // point BOSS_CHASE_DISTANCE=35 behind), so left alone he'd sit permanently
-    // behind the camera itself and never enter the frame at all, not just
-    // briefly. While he's active, pull the camera back (and up a little)
-    // past however far behind the player he currently is, so he's always
-    // between the camera and the player - i.e. visibly in frame - rather
-    // than needing to guess a single fixed distance that works for every
-    // point in the chase.
-    _camChaseOffset.copy(chaseOffset);
-    if (boss.active) {
-      const bossDistBehind = _camBossVec.copy(state.pos).sub(boss.pos).length();
-      _camChaseOffset.z = THREE.MathUtils.clamp(bossDistBehind + 16, chaseOffset.z, 220);
-      _camChaseOffset.y = THREE.MathUtils.clamp(3.2 + _camChaseOffset.z * 0.12, chaseOffset.y, 22);
-    }
-    _camDesired.copy(_camChaseOffset).applyQuaternion(q).add(glider.position);
+    // Always the normal close offset, even with the boss active - pulling
+    // the main camera back to keep him in frame (an earlier approach) made
+    // the player's own glider too small and distant to fly precisely by,
+    // which matters most exactly when it's hardest: lining up a landing
+    // while getting shot at. The Baron is shown in a separate
+    // picture-in-picture instead (see updateBossPipCamera/renderBossPip).
+    _camDesired.copy(chaseOffset).applyQuaternion(q).add(glider.position);
     camera.position.lerp(_camDesired, 1 - Math.pow(0.001, dt));
     _camLookTarget.copy(glider.position).add(UP_OFFSET);
     camera.up.set(0, 1, 0);
@@ -1914,6 +1923,44 @@ function updateCamera(dt) {
     _camLookTarget.copy(_camDesired).add(_camFwd);
     camera.lookAt(_camLookTarget);
   }
+}
+
+const bossPipFrameEl = document.getElementById("boss-pip-frame");
+
+// Renders the small Red Baron chase view into a corner of the screen, while
+// he's active and past the reveal cutscene (which already shows him
+// full-screen). Reads the DOM frame's own on-screen rect each call and
+// mirrors it exactly for the WebGL viewport/scissor, rather than
+// duplicating the CSS positioning math in JS - guarantees the rendered
+// inset and its visible border line up regardless of safe-area insets,
+// orientation, or anything else the CSS handles.
+function renderBossPip() {
+  const active = boss.active && boss.revealTimer <= 0;
+  bossPipFrameEl.classList.toggle("show", active);
+  if (!active) return;
+
+  updateBossPipCamera();
+
+  const rect = bossPipFrameEl.getBoundingClientRect();
+  const canvasWidth = renderer.domElement.clientWidth;
+  const canvasHeight = renderer.domElement.clientHeight;
+  const x = rect.left;
+  const y = canvasHeight - rect.top - rect.height; // CSS top-down -> WebGL bottom-up
+  const w = rect.width, h = rect.height;
+  if (w <= 0 || h <= 0) return;
+
+  const aspect = w / h;
+  if (Math.abs(bossCamera.aspect - aspect) > 1e-3) {
+    bossCamera.aspect = aspect;
+    bossCamera.updateProjectionMatrix();
+  }
+
+  renderer.setScissorTest(true);
+  renderer.setViewport(x, y, w, h);
+  renderer.setScissor(x, y, w, h);
+  renderer.render(scene, bossCamera);
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, canvasWidth, canvasHeight);
 }
 
 /* ------------------------------------------------------------------ *
@@ -2161,6 +2208,7 @@ function frame(now) {
   updateEngineSound();
 
   renderer.render(scene, camera);
+  renderBossPip();
 }
 requestAnimationFrame(frame);
 
@@ -2180,6 +2228,7 @@ window.__sim = {
   getMaxUnlockedLevel: () => maxUnlockedLevel,
   spawnRings, getRingCenters: () => rings.slice(0, activeRingCount).map((r) => r.center.clone()),
   boss, bossPlane, fireBossProjectile, updateCamera, updateBoss,
+  bossCamera, renderBossPip,
   getBossProjectiles: () => bossProjectiles.map((p) => ({ active: p.active, pos: p.pos.clone() })),
   getActiveRingCount: () => activeRingCount,
   isDebugMode: () => debugMode,
