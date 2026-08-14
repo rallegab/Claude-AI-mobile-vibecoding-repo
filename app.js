@@ -1678,21 +1678,21 @@ for (let i = 0; i < BOSS_PROJECTILE_COUNT; i++) {
 // lift, and the existing ground-collision/crash logic takes it from there.
 const BOSS_SPAWN_DISTANCE = 500;
 const BOSS_CRUISE_SPEED = 46;
-// How far behind the player the Baron settles once he's caught up - kept
-// tighter than a real WWI tail-chase distance would be so the normal chase
-// camera (which itself only trails the player by chaseOffset.z=11) can
-// actually keep him in frame; see the dynamic camera pullback in
-// updateCamera(), which also depends on this staying comfortably under its
-// own clamp ceiling.
-const BOSS_CHASE_DISTANCE = 35;
+// How far behind the player the Baron settles once he's caught up. Used to
+// sit much tighter (35) to stay inside the old dynamic camera pullback's
+// frame - that pullback is gone now (he's shown in the PIP instead, see
+// updateBossPipCamera/renderBossPip), so this is free to sit farther back
+// for its own sake: more distance means more projectile travel time, which
+// means more time to actually see a shot coming and dodge it.
+const BOSS_CHASE_DISTANCE = 65;
 const BOSS_FIRE_RANGE = 420;
 const BOSS_FIRE_INTERVAL_MIN = 1.8;
 const BOSS_FIRE_INTERVAL_MAX = 3.4;
-// Slow enough to visibly dodge at the close BOSS_CHASE_DISTANCE range
-// (~35-55m out): at the original 190, travel time there was under 0.3s -
-// essentially no reaction window regardless of aim. Combined with the aim
-// lead/spread below, shots are now a genuine "see it coming and juke"
-// threat instead of a near-unavoidable one.
+// Slow enough to visibly dodge at the close BOSS_CHASE_DISTANCE range: at
+// the original 190, travel time there was under 0.3s - essentially no
+// reaction window regardless of aim. Combined with the aim lead/spread
+// below, shots are now a genuine "see it coming and juke" threat instead of
+// a near-unavoidable one.
 const BOSS_PROJECTILE_SPEED = 90;
 const BOSS_AIM_LEAD_FACTOR = 0.4; // how much of the player's current velocity to lead by - partial, not a perfect intercept
 const BOSS_AIM_SPREAD = 0.02; // random aim error per shot (unit-vector component jitter) - small enough that a straight-flying target still mostly gets hit, but a few meters of active dodging at the slower projectile speed reliably clears it
@@ -1711,6 +1711,17 @@ const boss = {
   revealTimer: 0,
 };
 let bossTime = 0; // sim-seconds accumulated while the boss is active - used for firing cadence instead of wall-clock time, so it stays correct under direct physicsStep-driven testing too
+
+// Same render-interpolation pattern as renderPrevPos/renderPrevQuat above,
+// just never applied to the boss until now - bossPlane's transform used to
+// be set directly inside updateBoss(), which only runs once per fixed-60Hz
+// physics step. Since render frame rate rarely lines up exactly with that,
+// bossPlane would hold still for a frame then snap on the next one that
+// actually ran a physics step - small on the wide main view, but glaring in
+// the small PIP where he fills most of the frame (this is exactly what read
+// as "jerking"/"bugging out").
+const renderPrevBossPos = new V3().copy(boss.pos);
+const renderPrevBossQuat = new THREE.Quaternion().copy(boss.quat);
 
 function resetBoss() {
   boss.active = false;
@@ -2026,6 +2037,11 @@ function spawnBoss() {
   bossQuatFromForward(_bossFwd, boss.quat);
   boss.vel.copy(_bossFwd).multiplyScalar(BOSS_CRUISE_SPEED);
 
+  // Snap the render-interpolation baseline to the fresh spawn point too, so
+  // frame()'s lerp/slerp (see renderPrevBossPos/Quat) starts exactly here
+  // instead of streaking in from wherever bossPlane last was.
+  renderPrevBossPos.copy(boss.pos);
+  renderPrevBossQuat.copy(boss.quat);
   bossPlane.position.copy(boss.pos);
   bossPlane.quaternion.copy(boss.quat);
   bossPlane.visible = true;
@@ -2080,8 +2096,9 @@ function updateBoss(dt) {
   boss.vel.copy(_bossOwnFwd).multiplyScalar(speed);
   boss.pos.addScaledVector(boss.vel, dt);
 
-  bossPlane.position.copy(boss.pos);
-  bossPlane.quaternion.copy(boss.quat);
+  // bossPlane's own transform is no longer set here - it's driven by
+  // frame()'s render-interpolation instead (see renderPrevBossPos/Quat),
+  // same as the player's glider always has been.
   bossPropeller.rotation.z += dt * 26;
 
   if (bossTime >= boss.nextFireTime) {
@@ -2168,12 +2185,14 @@ function updateCamera(dt) {
   // reads far better as a "here's your villain" reveal beat anyway.
   if (boss.active && boss.revealTimer > 0) {
     boss.revealTimer -= dt;
-    _bossOwnFwd.copy(LOCAL_FWD).applyQuaternion(boss.quat);
+    // Reads bossPlane's own (render-interpolated) transform rather than raw
+    // boss.pos/quat, so this cinematic shot is exactly as smooth as the PIP.
+    _bossOwnFwd.copy(LOCAL_FWD).applyQuaternion(bossPlane.quaternion);
     _bossRevealOffset.copy(_bossOwnFwd).multiplyScalar(-16);
     _bossRevealOffset.y += 4;
-    camera.position.copy(boss.pos).add(_bossRevealOffset);
+    camera.position.copy(bossPlane.position).add(_bossRevealOffset);
     camera.up.set(0, 1, 0);
-    _bossRevealMid.copy(boss.pos).add(UP_OFFSET);
+    _bossRevealMid.copy(bossPlane.position).add(UP_OFFSET);
     camera.lookAt(_bossRevealMid);
     if (camera.fov !== 62) { camera.fov = 62; camera.updateProjectionMatrix(); }
     return;
@@ -2484,6 +2503,8 @@ function frame(now) {
   while (accumulator >= FIXED_DT) {
     renderPrevPos.copy(state.pos);
     renderPrevQuat.copy(state.quat);
+    renderPrevBossPos.copy(boss.pos);
+    renderPrevBossQuat.copy(boss.quat);
     physicsStep(FIXED_DT);
     accumulator -= FIXED_DT;
   }
@@ -2495,6 +2516,10 @@ function frame(now) {
   const renderAlpha = Math.min(accumulator / FIXED_DT, 1);
   glider.position.lerpVectors(renderPrevPos, state.pos, renderAlpha);
   glider.quaternion.copy(renderPrevQuat).slerp(state.quat, renderAlpha);
+  if (boss.active) {
+    bossPlane.position.lerpVectors(renderPrevBossPos, boss.pos, renderAlpha);
+    bossPlane.quaternion.copy(renderPrevBossQuat).slerp(boss.quat, renderAlpha);
+  }
 
   if (state.launched && !state.crashed && !state.landed) {
     propeller.rotation.z += dt * (8 + 24 * controls.throttle);
