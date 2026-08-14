@@ -1508,6 +1508,11 @@ function buildLevel(idx) {
   starGroup.visible = !!level.isSpace;
   scene.background = level.isSpace ? spaceBackgroundColor : skyColor;
   scene.fog = level.isSpace ? null : atmosphereFog;
+  // No air to bite into out there, so a spinning propeller wouldn't do
+  // anything - it's pure RCS/main-thruster propulsion in space (see
+  // spacePhysicsStep), so hide it rather than have it visibly spin for no
+  // physical reason.
+  propeller.visible = !level.isSpace;
 
   // Rings themselves are level-independent objects (spawnRings() just
   // repositions the same 8 each course) - only their baked-in message
