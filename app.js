@@ -64,6 +64,20 @@ const RING_MESSAGES = [
   "I KNOW THAT\nI KNOW NOTHING\n— SOCRATES",
   "YOU HAVE POWER OVER YOUR\nMIND, NOT OUTSIDE EVENTS\n— MARCUS AURELIUS",
 ];
+// Deep Space level only (see buildLevel's ring-texture swap) - kept shorter
+// than the philosophy set above so they read cleanly at a glance through
+// the ring's hole rather than the atmosphere levels' occasional 2-3 line
+// ones.
+const SPACE_RING_MESSAGES = [
+  "GIVE ME A LEVER\nI MOVE THE WORLD\n— ARCHIMEDES",
+  "AND YET IT MOVES\n— GALILEO",
+  "ON THE SHOULDERS\nOF GIANTS\n— NEWTON",
+  "THERE IS GRANDEUR\nIN THIS VIEW OF LIFE\n— DARWIN",
+  "NOTHING IS TO BE FEARED\nONLY UNDERSTOOD\n— CURIE",
+  "E = MC²\n— EINSTEIN",
+  "WHAT I CANNOT CREATE\nI DO NOT UNDERSTAND\n— FEYNMAN",
+  "EXTRAORDINARY CLAIMS\nNEED EXTRAORDINARY EVIDENCE\n— SAGAN",
+];
 const WIN_TITLE = "CONGRATS, PANJIA FOUNDER!";
 const WIN_SUBTITLE = "YOU BEAT THE GAME";
 
@@ -1495,6 +1509,16 @@ function buildLevel(idx) {
   scene.background = level.isSpace ? spaceBackgroundColor : skyColor;
   scene.fog = level.isSpace ? null : atmosphereFog;
 
+  // Rings themselves are level-independent objects (spawnRings() just
+  // repositions the same 8 each course) - only their baked-in message
+  // texture changes here, swapped once per level rather than regenerated
+  // on every relaunch.
+  const ringTextures = level.isSpace ? spaceRingTextures : philosophyRingTextures;
+  for (let i = 0; i < rings.length; i++) {
+    rings[i].textMat.map = ringTextures[i];
+    rings[i].textMat.needsUpdate = true;
+  }
+
   const hud = document.getElementById("hud");
   if (hud) hud.classList.toggle("space-mode", !!level.isSpace);
   const hudSpeedLabel = document.getElementById("hud-speed-label");
@@ -1693,7 +1717,7 @@ const BOSS_FIRE_INTERVAL_MAX = 3.4;
 // reaction window regardless of aim. Combined with the aim lead/spread
 // below, shots are now a genuine "see it coming and juke" threat instead of
 // a near-unavoidable one.
-const BOSS_PROJECTILE_SPEED = 90;
+const BOSS_PROJECTILE_SPEED = 80;
 const BOSS_AIM_LEAD_FACTOR = 0.4; // how much of the player's current velocity to lead by - partial, not a perfect intercept
 const BOSS_AIM_SPREAD = 0.02; // random aim error per shot (unit-vector component jitter) - small enough that a straight-flying target still mostly gets hit, but a few meters of active dodging at the slower projectile speed reliably clears it
 const BOSS_HIT_RADIUS = 4.5;
@@ -1788,7 +1812,7 @@ function makeTextTexture(text, size) {
   return tex;
 }
 
-function buildRingVisual(message) {
+function buildRingVisual(initialTexture) {
   const group = new THREE.Group();
 
   const torusGeo = new THREE.TorusGeometry(RING_HOLE_RADIUS + RING_TUBE_RADIUS, RING_TUBE_RADIUS, 12, 32);
@@ -1797,8 +1821,7 @@ function buildRingVisual(message) {
   group.add(torus);
 
   const planeSize = (RING_HOLE_RADIUS - 1) * 2;
-  const textTex = makeTextTexture(message, 512);
-  const textMat = new THREE.MeshBasicMaterial({ map: textTex, transparent: true, side: THREE.DoubleSide, depthWrite: false });
+  const textMat = new THREE.MeshBasicMaterial({ map: initialTexture, transparent: true, side: THREE.DoubleSide, depthWrite: false });
   const textPlane = new THREE.Mesh(new THREE.PlaneGeometry(planeSize, planeSize), textMat);
   // Plane's front face defaults to local +Z, but players approach from the
   // -Z side (opposite the ring's direction-of-travel normal) - flip so the
@@ -1807,10 +1830,16 @@ function buildRingVisual(message) {
   group.add(textPlane);
 
   scene.add(group);
-  return { group, torus, torusMat, center: new V3(), normal: new V3(0, 0, 1), passed: false };
+  return { group, torus, torusMat, textMat, center: new V3(), normal: new V3(0, 0, 1), passed: false };
 }
 
-for (const msg of RING_MESSAGES) rings.push(buildRingVisual(msg));
+// Two pre-baked texture sets (one per message list above), swapped onto the
+// same 8 rings by buildLevel() depending on the level rather than rebuilt
+// per level switch - the rings themselves are level-independent objects
+// just repositioned by spawnRings() for whichever course is active.
+const philosophyRingTextures = RING_MESSAGES.map((m) => makeTextTexture(m, 512));
+const spaceRingTextures = SPACE_RING_MESSAGES.map((m) => makeTextTexture(m, 512));
+for (const tex of philosophyRingTextures) rings.push(buildRingVisual(tex));
 
 // setFromUnitVectors only constrains the forward axis, leaving roll about it
 // arbitrary - build an up-preserving basis instead so rings don't tilt randomly.
