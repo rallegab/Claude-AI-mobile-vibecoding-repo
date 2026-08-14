@@ -20,9 +20,9 @@
 <!-- HUD -->
 <div id="hud">
   <div id="hud-top-left" class="panel">
-    <div class="hud-row"><span class="label">IAS</span><span id="hud-speed" class="value">0</span><span class="unit">km/h</span></div>
-    <div class="hud-row"><span class="label">ALT</span><span id="hud-alt" class="value">0</span><span class="unit">m</span></div>
-    <div class="hud-row"><span class="label">V/S</span><span id="hud-vs" class="value">0.0</span><span class="unit">m/s</span></div>
+    <div class="hud-row"><span id="hud-speed-label" class="label">IAS</span><span id="hud-speed" class="value">0</span><span id="hud-speed-unit" class="unit">km/h</span></div>
+    <div class="hud-row" id="hud-alt-row"><span class="label">ALT</span><span id="hud-alt" class="value">0</span><span class="unit">m</span></div>
+    <div class="hud-row" id="hud-vs-row"><span class="label">V/S</span><span id="hud-vs" class="value">0.0</span><span class="unit">m/s</span></div>
   </div>
 
   <div id="hud-top-right" class="panel">
@@ -84,7 +84,11 @@
   </div>
   <div id="stick-right" class="joystick">
     <div class="joystick-base"><div class="joystick-knob"></div></div>
-    <div class="joystick-tag">YAW / AIRBRAKE</div>
+    <div class="joystick-tag" id="stick-right-tag">YAW / AIRBRAKE</div>
+  </div>
+  <div id="stick-strafe" class="joystick">
+    <div class="joystick-base"><div class="joystick-knob"></div></div>
+    <div class="joystick-tag">STRAFE / VERTICAL</div>
   </div>
 
   <div id="throttle" class="slider-vert">
@@ -124,6 +128,11 @@
       <button class="level-btn" data-level="2">
         <span class="level-num">3</span>
         <span class="level-text"><span class="level-name">Nepal</span><span class="level-sub">Towering peaks, fierce wind</span></span>
+        <span class="level-lock">&#128274;</span>
+      </button>
+      <button class="level-btn secret-level" data-level="3">
+        <span class="level-num">&#128640;</span>
+        <span class="level-text"><span class="level-name">Deep Space</span><span class="level-sub">Zero-G &middot; RCS thrusters only</span></span>
         <span class="level-lock">&#128274;</span>
       </button>
     </div>

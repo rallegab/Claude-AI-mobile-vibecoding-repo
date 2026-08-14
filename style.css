@@ -349,6 +349,21 @@ html, body {
 #stick-left { left: calc(env(safe-area-inset-left, 0px) + 18px); }
 #stick-right { right: calc(env(safe-area-inset-right, 0px) + 18px); }
 
+/* Third joystick, space level only (left/right + up/down RCS strafe) -
+   hidden everywhere else. Sits bottom-center in landscape, where there's
+   horizontal room between the other two sticks; in portrait there isn't, so
+   it stacks above them instead, same as other HUD elements that reflow for
+   portrait elsewhere in this file. */
+#stick-strafe {
+  display: none;
+  left: 50%;
+  transform: translateX(-50%);
+}
+#hud.space-mode #stick-strafe { display: block; }
+@media (orientation: portrait) {
+  #stick-strafe { bottom: calc(env(safe-area-inset-bottom, 0px) + 220px); }
+}
+
 .joystick-base {
   position: absolute;
   inset: 0;
@@ -422,6 +437,18 @@ html, body {
   font-size: 9px;
   letter-spacing: 1px;
   color: #6f93a8;
+}
+
+/* Space level: no atmosphere, so nothing aerodynamic applies. Forward/back
+   thrust moves to the right stick (see app.js), freeing up the throttle
+   slider's spot entirely; altitude-above-ground, vertical speed, wind, and
+   the runway dial are all meaningless with no ground or air out there. */
+#hud.space-mode #throttle,
+#hud.space-mode #hud-alt-row,
+#hud.space-mode #hud-vs-row,
+#hud.space-mode #wind-indicator,
+#hud.space-mode #runway-indicator {
+  display: none;
 }
 
 #start-overlay {
@@ -522,6 +549,16 @@ html, body {
 .level-btn.locked .level-num,
 .level-btn.locked .level-name { color: #6f93a8; }
 .level-btn.locked .level-lock { opacity: 0.8; }
+
+/* A true secret, not just a locked tile - stays completely absent from the
+   menu (rather than shown-but-locked, like the other levels) until earned,
+   so its existence itself is the surprise. */
+.level-btn.secret-level.hidden-secret { display: none; }
+.level-btn.secret-level {
+  background: linear-gradient(135deg, rgba(70, 40, 120, 0.4), rgba(15, 15, 35, 0.45));
+  border-color: rgba(190, 150, 255, 0.4);
+}
+.level-btn.secret-level .level-num { color: #d9b8ff; }
 
 .debug-toggle {
   display: flex;

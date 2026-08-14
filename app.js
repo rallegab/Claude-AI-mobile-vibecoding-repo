@@ -97,7 +97,9 @@ const state = {
 const renderPrevPos = new V3().copy(state.pos);
 const renderPrevQuat = new THREE.Quaternion().copy(state.quat);
 
-const controls = { aileron: 0, elevator: 0, rudder: 0, airbrake: 0, throttle: 1 };
+// thrustZ/strafeX/strafeY are space-level-only (see spacePhysicsStep) -
+// aileron/elevator/rudder do double duty as pure RCS rotation there too.
+const controls = { aileron: 0, elevator: 0, rudder: 0, airbrake: 0, throttle: 1, thrustZ: 0, strafeX: 0, strafeY: 0 };
 
 const rings = []; // filled in by spawnRings() once the scene exists (always 8, regardless of debug mode - see activeRingCount)
 let ringIndex = 0;
@@ -170,12 +172,15 @@ const LEVEL_UNLOCK_KEY = "gliderSimMaxUnlockedLevel";
 let maxUnlockedLevel = 0;
 try {
   const stored = parseInt(localStorage.getItem(LEVEL_UNLOCK_KEY), 10);
-  if (!isNaN(stored)) maxUnlockedLevel = THREE.MathUtils.clamp(stored, 0, 2);
+  // 0-3: Germany, Norway, Nepal, and the hidden Deep Space level - LEVELS
+  // itself isn't defined yet at this point in the module, so the ceiling is
+  // hardcoded here same as it always has been, rather than LEVELS.length-1.
+  if (!isNaN(stored)) maxUnlockedLevel = THREE.MathUtils.clamp(stored, 0, 3);
 } catch (e) { /* localStorage unavailable (e.g. private browsing) - default to 0 */ }
 
 function unlockNextLevel() {
   const next = currentLevelIndex + 1;
-  if (next > 2 || next <= maxUnlockedLevel) return;
+  if (next > LEVELS.length - 1 || next <= maxUnlockedLevel) return;
   maxUnlockedLevel = next;
   try { localStorage.setItem(LEVEL_UNLOCK_KEY, String(maxUnlockedLevel)); } catch (e) { /* ignore */ }
   if (typeof refreshLevelSelectUI === "function") refreshLevelSelectUI();
@@ -202,6 +207,7 @@ function resetState() {
 }
 
 function physicsStep(dt) {
+  if (LEVELS[currentLevelIndex].isSpace) { spacePhysicsStep(dt); return; }
   if (!state.launched || state.crashed || state.landed) return;
 
   updateWind(dt);
@@ -294,6 +300,61 @@ function physicsStep(dt) {
   checkRingCrossing(prevPos, state.pos);
   checkGround();
   if (boss.active) updateBoss(dt);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Space physics: pure Newtonian 6DOF, RCS thrusters only. No gravity, *
+ *  no lift, no drag, no wind, no ground - direct rotational/          *
+ *  translational thrust response in body frame, then straight-line    *
+ *  integration. Deliberately still gives residual angular velocity a  *
+ *  light exponential damping (SPACE_ANGULAR_DAMPING) rather than true *
+ *  frictionless drift - reads as the RCS quietly holding attitude     *
+ *  when idle, which is far more flyable on a touchscreen than an      *
+ *  un-piloted ship spinning forever from the last input.              *
+ * ------------------------------------------------------------------ */
+const SPACE_PITCH_ACCEL = 1.6;      // rad/s^2 at full elevator deflection
+const SPACE_ROLL_ACCEL = 1.6;
+const SPACE_YAW_ACCEL = 1.2;
+const SPACE_ANGULAR_DAMPING = 0.6;  // 1/s
+const SPACE_MAIN_THRUST_ACCEL = 14; // m/s^2, forward/back
+const SPACE_STRAFE_ACCEL = 9;       // m/s^2, left/right and up/down RCS
+
+const _spaceBodyAccel = new V3();
+
+function spacePhysicsStep(dt) {
+  if (!state.launched || state.crashed || state.landed) return;
+
+  _prevPos.copy(state.pos);
+  const prevPos = _prevPos;
+  const q = state.quat;
+
+  // --- Rotation: direct RCS torque, no aerodynamic coupling at all ---
+  state.angVel.x += controls.elevator * SPACE_PITCH_ACCEL * dt;
+  state.angVel.z -= controls.aileron * SPACE_ROLL_ACCEL * dt;
+  state.angVel.y -= controls.rudder * SPACE_YAW_ACCEL * dt;
+  state.angVel.multiplyScalar(Math.exp(-SPACE_ANGULAR_DAMPING * dt));
+
+  const omega = state.angVel;
+  _qOmega.set(omega.x, omega.y, omega.z, 0);
+  _qDot.copy(q).multiply(_qOmega);
+  q.x += 0.5 * _qDot.x * dt;
+  q.y += 0.5 * _qDot.y * dt;
+  q.z += 0.5 * _qDot.z * dt;
+  q.w += 0.5 * _qDot.w * dt;
+  q.normalize();
+
+  // --- Translation: body-frame thrust only, no gravity/lift/drag ---
+  _spaceBodyAccel.set(
+    controls.strafeX * SPACE_STRAFE_ACCEL,
+    controls.strafeY * SPACE_STRAFE_ACCEL,
+    -controls.thrustZ * SPACE_MAIN_THRUST_ACCEL
+  );
+  _spaceBodyAccel.applyQuaternion(q);
+  state.vel.addScaledVector(_spaceBodyAccel, dt);
+  state.pos.addScaledVector(state.vel, dt);
+  state.airspeed = state.vel.length(); // repurposed as plain speed for the space HUD readout
+
+  checkRingCrossing(prevPos, state.pos);
 }
 
 const _attFwd = new V3();
@@ -657,7 +718,7 @@ function playBossHitSound() {
 /* ------------------------------------------------------------------ *
  *  Controls: touch joysticks + optional device tilt                  *
  * ------------------------------------------------------------------ */
-const input = { left: { x: 0, y: 0 }, right: { x: 0, y: 0 }, throttle: 1 };
+const input = { left: { x: 0, y: 0 }, right: { x: 0, y: 0 }, strafe: { x: 0, y: 0 }, throttle: 1 };
 let tiltEnabled = false;
 let tiltBaseline = null;
 let throttleVisualUpdate = null;
@@ -820,8 +881,18 @@ function updateControlsFromInput() {
   // Inverted: stick/tilt up = nose down, stick/tilt down = nose up.
   controls.elevator = THREE.MathUtils.clamp(input.left.y, -1, 1);
   controls.rudder = THREE.MathUtils.clamp(input.right.x, -1, 1);
-  controls.airbrake = THREE.MathUtils.clamp(input.right.y, 0, 1);
-  controls.throttle = THREE.MathUtils.clamp(input.throttle, 0, 1);
+  if (LEVELS[currentLevelIndex].isSpace) {
+    // Space: no drag to bleed speed off with, so "airbrake" is meaningless -
+    // the right stick's Y axis becomes bidirectional main thrust instead
+    // (up = forward), and a third stick drives pure RCS strafe.
+    controls.thrustZ = THREE.MathUtils.clamp(-input.right.y, -1, 1);
+    controls.strafeX = THREE.MathUtils.clamp(input.strafe.x, -1, 1);
+    controls.strafeY = THREE.MathUtils.clamp(-input.strafe.y, -1, 1);
+    controls.throttle = THREE.MathUtils.clamp(controls.thrustZ, 0, 1); // cosmetic only - propeller spin/engine sound reuse this
+  } else {
+    controls.airbrake = THREE.MathUtils.clamp(input.right.y, 0, 1);
+    controls.throttle = THREE.MathUtils.clamp(input.throttle, 0, 1);
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -838,8 +909,19 @@ const skyColor = new THREE.Color(0x8fc7ea);
 scene.background = skyColor;
 // Closer, thicker haze than the render distance below actually needs, so the
 // far edge of the terrain/backdrop is comfortably hidden well before it -
-// masking it instead of just pushing it further away.
-scene.fog = new THREE.Fog(0xbfe0f5, 600, 4200);
+// masking it instead of just pushing it further away. Kept in its own
+// variable (rather than only living on scene.fog) so buildLevel() can null
+// it out for the space level, then restore the exact same object when
+// switching back to an atmosphere level.
+const atmosphereFog = new THREE.Fog(0xbfe0f5, 600, 4200);
+scene.fog = atmosphereFog;
+
+// Everything that only makes sense with sky/ground/air - the sky dome,
+// distant ground backdrop, and runway - lives here so buildLevel() can hide
+// the whole lot in one shot for the space level rather than tracking each
+// mesh individually.
+const atmosphereGroup = new THREE.Group();
+scene.add(atmosphereGroup);
 
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 8000);
 
@@ -866,7 +948,7 @@ function createSkyDome() {
   const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false });
   return new THREE.Mesh(geo, mat);
 }
-scene.add(createSkyDome());
+atmosphereGroup.add(createSkyDome());
 
 function createGroundTexture() {
   const c = document.createElement("canvas");
@@ -924,10 +1006,10 @@ function makeBackdropStrip(width, depth, x, z) {
   return mesh;
 }
 const BACKDROP_OUTER_HALF = 15000;
-scene.add(makeBackdropStrip(BACKDROP_OUTER_HALF * 2, BACKDROP_OUTER_HALF - TERRAIN_HALF, 0, TERRAIN_HALF + (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2));
-scene.add(makeBackdropStrip(BACKDROP_OUTER_HALF * 2, BACKDROP_OUTER_HALF - TERRAIN_HALF, 0, -TERRAIN_HALF - (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2));
-scene.add(makeBackdropStrip(BACKDROP_OUTER_HALF - TERRAIN_HALF, TERRAIN_SIZE, TERRAIN_HALF + (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2, 0));
-scene.add(makeBackdropStrip(BACKDROP_OUTER_HALF - TERRAIN_HALF, TERRAIN_SIZE, -TERRAIN_HALF - (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2, 0));
+atmosphereGroup.add(makeBackdropStrip(BACKDROP_OUTER_HALF * 2, BACKDROP_OUTER_HALF - TERRAIN_HALF, 0, TERRAIN_HALF + (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2));
+atmosphereGroup.add(makeBackdropStrip(BACKDROP_OUTER_HALF * 2, BACKDROP_OUTER_HALF - TERRAIN_HALF, 0, -TERRAIN_HALF - (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2));
+atmosphereGroup.add(makeBackdropStrip(BACKDROP_OUTER_HALF - TERRAIN_HALF, TERRAIN_SIZE, TERRAIN_HALF + (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2, 0));
+atmosphereGroup.add(makeBackdropStrip(BACKDROP_OUTER_HALF - TERRAIN_HALF, TERRAIN_SIZE, -TERRAIN_HALF - (BACKDROP_OUTER_HALF - TERRAIN_HALF) / 2, 0));
 
 // Farmland fields: rotated rectangles blended into the grass with a soft
 // edge. Only populated by buildLevel() for levels with hasFarmland (Germany).
@@ -1068,6 +1150,16 @@ const LEVELS = [
     groundColor: 0x8a7a5c, rockColor: 0x8f8577, snowColor: 0xf5f8fb,
     hasBoss: true, // final level - the Red Baron shows up once all rings are cleared
   },
+  {
+    // Hidden bonus level, unlocked only after beating Nepal (see
+    // unlockNextLevel/maxUnlockedLevel) - no terrain, no atmosphere, no
+    // aerodynamics at all. isSpace fully reroutes physics (spacePhysicsStep),
+    // ring placement (pickRingPointSpace), environment (starGroup instead of
+    // terrain), and the win condition (win immediately on the 8th ring,
+    // no landing) - see the isSpace checks throughout this file.
+    name: "Deep Space", subtitle: "Zero-G · RCS thrusters only",
+    isSpace: true,
+  },
 ];
 
 function buildTerrainMesh(level) {
@@ -1117,12 +1209,89 @@ const runway = new THREE.Mesh(
 );
 runway.rotation.x = -Math.PI / 2;
 runway.position.set(0, 0.05, -100);
-scene.add(runway);
+atmosphereGroup.add(runway);
 for (let i = 0; i < 6; i++) {
   const stripe = new THREE.Mesh(new THREE.PlaneGeometry(2, 20), new THREE.MeshLambertMaterial({ color: 0xffffff }));
   stripe.rotation.x = -Math.PI / 2;
   stripe.position.set(0, 0.06, -20 - i * 40);
-  scene.add(stripe);
+  atmosphereGroup.add(stripe);
+}
+
+/* --- Deep Space level: starfield + a distant planet, built once and just  *
+ * toggled visible/hidden by buildLevel() rather than rebuilt per switch,   *
+ * since neither depends on anything level-specific.                       */
+function createStarfield() {
+  const STAR_COUNT = 2400;
+  const positions = new Float32Array(STAR_COUNT * 3);
+  for (let i = 0; i < STAR_COUNT; i++) {
+    // Uniform random point on a sphere shell (not a naive lat/long
+    // random pair, which would bunch stars up near the poles).
+    const u = Math.random(), v = Math.random();
+    const theta = 2 * Math.PI * u;
+    const phi = Math.acos(2 * v - 1);
+    const r = 3800 + Math.random() * 800;
+    positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+    positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+    positions[i * 3 + 2] = r * Math.cos(phi);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.PointsMaterial({ color: 0xffffff, size: 2.5, sizeAttenuation: false, fog: false });
+  return new THREE.Points(geo, mat);
+}
+
+function createSpacePlanet() {
+  // Same canvas-texture approach as createSkyDome/createGroundTexture above
+  // - a simple banded gradient, no image assets.
+  const c = document.createElement("canvas");
+  c.width = 4; c.height = 256;
+  const ctx = c.getContext("2d");
+  const grad = ctx.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, "#8a5fc0");
+  grad.addColorStop(0.4, "#a877d0");
+  grad.addColorStop(0.6, "#5d3d90");
+  grad.addColorStop(1, "#2c1e52");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 4, 256);
+  const tex = new THREE.CanvasTexture(c);
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(900, 32, 24),
+    new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9, fog: false })
+  );
+  mesh.position.set(2600, 300, -5200);
+  return mesh;
+}
+
+const spaceBackgroundColor = new THREE.Color(0x03050d);
+const starGroup = new THREE.Group();
+starGroup.add(createStarfield());
+starGroup.add(createSpacePlanet());
+starGroup.visible = false;
+scene.add(starGroup);
+
+// Scattered asteroids for visual speed/motion reference, playing the same
+// role trees do on the atmosphere levels (see buildMarkers) - rebuilt into
+// levelGroup by buildLevel() each time the space level (re)loads, so it's
+// disposed automatically along with everything else when switching away.
+function buildAsteroidField() {
+  const COUNT = 140;
+  const geo = new THREE.IcosahedronGeometry(1, 0);
+  const mat = new THREE.MeshStandardMaterial({ color: 0x8a8378, roughness: 0.95, flatShading: true });
+  const mesh = new THREE.InstancedMesh(geo, mat, COUNT);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < COUNT; i++) {
+    dummy.position.set(
+      (Math.random() * 2 - 1) * 900,
+      LAUNCH_ALT + (Math.random() * 2 - 1) * 700,
+      -300 - Math.random() * 2600
+    );
+    const s = 3 + Math.random() * 9;
+    dummy.scale.set(s, s * (0.7 + Math.random() * 0.6), s * (0.7 + Math.random() * 0.6));
+    dummy.rotation.set(Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+  }
+  levelGroup.add(mesh);
 }
 
 // Everything buildLevel() rebuilds per level (terrain, villages, markers)
@@ -1235,40 +1404,59 @@ function buildLevel(idx) {
     levelGroup.remove(child);
   }
 
-  terrainHeight = makeTerrainHeightFn(level);
-
   FIELDS.length = 0;
   VILLAGES.length = 0;
-  if (level.hasFarmland) {
-    for (let i = 0; i < 13; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const dist = 350 + Math.random() * 2300;
-      FIELDS.push({
-        cx: Math.sin(angle) * dist,
-        cz: Math.cos(angle) * dist,
-        halfW: 45 + Math.random() * 90,
-        halfD: 40 + Math.random() * 80,
-        rot: Math.random() * Math.PI,
-        color: new THREE.Color(FIELD_COLORS[i % FIELD_COLORS.length]),
-      });
+
+  if (level.isSpace) {
+    terrainHeight = () => 0; // no ground at all - just a stable baseline for the spawn point
+    buildAsteroidField();
+  } else {
+    terrainHeight = makeTerrainHeightFn(level);
+    if (level.hasFarmland) {
+      for (let i = 0; i < 13; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const dist = 350 + Math.random() * 2300;
+        FIELDS.push({
+          cx: Math.sin(angle) * dist,
+          cz: Math.cos(angle) * dist,
+          halfW: 45 + Math.random() * 90,
+          halfD: 40 + Math.random() * 80,
+          rot: Math.random() * Math.PI,
+          color: new THREE.Color(FIELD_COLORS[i % FIELD_COLORS.length]),
+        });
+      }
+      for (let i = 0; i < VILLAGE_COUNT; i++) {
+        const angle = (i / VILLAGE_COUNT) * Math.PI * 2 + (Math.random() - 0.5) * 0.7;
+        const dist = 700 + Math.random() * 1900;
+        VILLAGES.push({
+          x: Math.sin(angle) * dist,
+          z: Math.cos(angle) * dist,
+          buildings: 6 + Math.floor(Math.random() * 8),
+        });
+      }
     }
-    for (let i = 0; i < VILLAGE_COUNT; i++) {
-      const angle = (i / VILLAGE_COUNT) * Math.PI * 2 + (Math.random() - 0.5) * 0.7;
-      const dist = 700 + Math.random() * 1900;
-      VILLAGES.push({
-        x: Math.sin(angle) * dist,
-        z: Math.cos(angle) * dist,
-        buildings: 6 + Math.floor(Math.random() * 8),
-      });
-    }
+
+    levelGroup.add(buildTerrainMesh(level));
+    buildVillages(level);
+    buildMarkers(level);
+
+    WIND_MEAN.set(level.windMean.x, level.windMean.y, level.windMean.z);
+    WIND_GUST_AMPLITUDE = level.windGust;
   }
 
-  levelGroup.add(buildTerrainMesh(level));
-  buildVillages(level);
-  buildMarkers(level);
+  atmosphereGroup.visible = !level.isSpace;
+  starGroup.visible = !!level.isSpace;
+  scene.background = level.isSpace ? spaceBackgroundColor : skyColor;
+  scene.fog = level.isSpace ? null : atmosphereFog;
 
-  WIND_MEAN.set(level.windMean.x, level.windMean.y, level.windMean.z);
-  WIND_GUST_AMPLITUDE = level.windGust;
+  const hud = document.getElementById("hud");
+  if (hud) hud.classList.toggle("space-mode", !!level.isSpace);
+  const hudSpeedLabel = document.getElementById("hud-speed-label");
+  const hudSpeedUnit = document.getElementById("hud-speed-unit");
+  if (hudSpeedLabel) hudSpeedLabel.textContent = level.isSpace ? "SPD" : "IAS";
+  if (hudSpeedUnit) hudSpeedUnit.textContent = level.isSpace ? "m/s" : "km/h";
+  const stickRightTag = document.getElementById("stick-right-tag");
+  if (stickRightTag) stickRightTag.textContent = level.isSpace ? "YAW / THRUST" : "YAW / AIRBRAKE";
 
   const hudLevelName = document.getElementById("hud-level-name");
   if (hudLevelName) hudLevelName.textContent = level.name.toUpperCase();
@@ -1622,25 +1810,50 @@ function pickRingPoint(prevCursor, groundAtSpawn) {
   return new V3(best.lateral, Math.min(best.altitude, Math.max(best.groundHere + RING_MIN_CLEARANCE, RING_ALT_CEILING)), best.forward);
 }
 
+// No terrain to keep clear of in space, so the course is just a free 3D
+// random walk from the spawn point - clamped to a bounding volume around it
+// so the 8-ring course never wanders absurdly far away.
+const SPACE_RING_BOUND = 550;
+
+function pickRingPointSpace(prevCursor) {
+  if (!prevCursor) {
+    return new V3(0, LAUNCH_ALT, -(300 + Math.random() * 150));
+  }
+  const lateral = THREE.MathUtils.clamp(prevCursor.x + (Math.random() * 2 - 1) * 220, -SPACE_RING_BOUND, SPACE_RING_BOUND);
+  const vertical = THREE.MathUtils.clamp(prevCursor.y + (Math.random() * 2 - 1) * 180, LAUNCH_ALT - SPACE_RING_BOUND, LAUNCH_ALT + SPACE_RING_BOUND);
+  const forward = prevCursor.z - (220 + Math.random() * 200);
+  return new V3(lateral, vertical, forward);
+}
+
 function spawnRings() {
   ringIndex = 0;
   ringsComplete = false;
   courseWon = false;
   hideWinBanner();
 
+  const level = LEVELS[currentLevelIndex];
   // Debug mode collapses the course down to just the first ring on boss
   // levels, so the Red Baron fight can be reached and iterated on directly
   // instead of re-flying all 8 rings every time.
-  activeRingCount = (debugMode && LEVELS[currentLevelIndex].hasBoss) ? 1 : rings.length;
+  activeRingCount = (debugMode && level.hasBoss) ? 1 : rings.length;
   hudRingTotal.textContent = activeRingCount;
 
-  const groundAtSpawn = terrainHeight(0, 0);
   const points = [];
-  let cursor = pickRingPoint(null, groundAtSpawn);
-  points.push(cursor.clone());
-  for (let i = 1; i < activeRingCount; i++) {
-    cursor = pickRingPoint(cursor, groundAtSpawn);
+  if (level.isSpace) {
+    let cursor = pickRingPointSpace(null);
     points.push(cursor.clone());
+    for (let i = 1; i < activeRingCount; i++) {
+      cursor = pickRingPointSpace(cursor);
+      points.push(cursor.clone());
+    }
+  } else {
+    const groundAtSpawn = terrainHeight(0, 0);
+    let cursor = pickRingPoint(null, groundAtSpawn);
+    points.push(cursor.clone());
+    for (let i = 1; i < activeRingCount; i++) {
+      cursor = pickRingPoint(cursor, groundAtSpawn);
+      points.push(cursor.clone());
+    }
   }
 
   for (let i = 0; i < rings.length; i++) {
@@ -1695,7 +1908,13 @@ function passRing() {
     setRingVisualState(rings[ringIndex], "active");
   } else {
     ringsComplete = true;
-    if (LEVELS[currentLevelIndex].hasBoss) {
+    const level = LEVELS[currentLevelIndex];
+    if (level.isSpace) {
+      // No landing out here - clearing the last ring wins the level outright.
+      courseWon = true;
+      showWinBanner();
+      playVictoryFanfare();
+    } else if (level.hasBoss) {
       // Hold off on the banner until the reveal cutscene is done, so it
       // doesn't cover the Baron's entrance.
       if (messageTimer) clearTimeout(messageTimer);
@@ -2020,10 +2239,15 @@ function hideMessage() {
 
 function showWinBanner() {
   winTitleEl.textContent = WIN_TITLE;
-  const isLastLevel = currentLevelIndex === LEVELS.length - 1;
-  winSubtitleEl.textContent = isLastLevel
+  const nextLevel = LEVELS[currentLevelIndex + 1];
+  // Beating Nepal unlocks the hidden Deep Space level, but naming it here
+  // would spoil the surprise before the player even reopens the level
+  // picker - show the same "you beat the game" text as an actual last
+  // level would get, and let them find the new tile on their own.
+  const revealsSecret = !!(nextLevel && nextLevel.isSpace);
+  winSubtitleEl.textContent = (!nextLevel || revealsSecret)
     ? WIN_SUBTITLE
-    : `${LEVELS[currentLevelIndex + 1].name.toUpperCase()} UNLOCKED - TAP LEVEL`;
+    : `${nextLevel.name.toUpperCase()} UNLOCKED - TAP LEVEL`;
   winBanner.classList.add("show");
 }
 function hideWinBanner() {
@@ -2032,7 +2256,7 @@ function hideWinBanner() {
 
 function updateHud() {
   const { pitch, bank, heading } = extractAttitude();
-  hudSpeed.textContent = Math.round(state.airspeed * 3.6);
+  hudSpeed.textContent = LEVELS[currentLevelIndex].isSpace ? Math.round(state.airspeed) : Math.round(state.airspeed * 3.6);
   hudAlt.textContent = Math.max(0, Math.round(state.pos.y));
   hudVs.textContent = state.vel.y.toFixed(1);
   hudHdg.textContent = String(Math.round((heading * 180 / Math.PI)) % 360).padStart(3, "0");
@@ -2105,6 +2329,7 @@ document.getElementById("btn-levels").addEventListener("click", openLevelSelect)
 
 setupJoystick(document.getElementById("stick-left"), input.left);
 setupJoystick(document.getElementById("stick-right"), input.right);
+setupJoystick(document.getElementById("stick-strafe"), input.strafe);
 throttleVisualUpdate = setupThrottleSlider(document.getElementById("throttle"), input);
 setupTilt();
 
@@ -2119,6 +2344,10 @@ function refreshLevelSelectUI() {
     const locked = idx > maxUnlockedLevel;
     btn.classList.toggle("locked", locked);
     btn.disabled = locked;
+    // The secret level doesn't just show locked like the others - it's
+    // absent from the menu entirely until earned, so its existence is
+    // itself the surprise.
+    if (btn.classList.contains("secret-level")) btn.classList.toggle("hidden-secret", locked);
   }
 }
 refreshLevelSelectUI();
