@@ -419,6 +419,7 @@ function checkGround() {
 let audioCtx = null;
 let masterGain = null;
 let engineOsc1 = null, engineOsc2 = null, engineGain = null;
+let rocketNoiseFilter = null, rocketNoiseGain = null, rocketRumbleGain = null;
 let soundEnabled = true;
 
 // Must be called from a user-gesture handler (mobile autoplay policy).
@@ -451,6 +452,37 @@ function initAudio() {
   engineOsc1.start();
   engineOsc2.start();
 
+  // Deep Space level: there's no propeller/engine out there, just RCS
+  // thrusters - filtered looping noise (a rumbling roar) through a bandpass
+  // filter, plus a low sawtooth underneath for body, rather than the
+  // sawtooth engine drone above. Both chains always exist; updateEngineSound
+  // silences whichever one the current level isn't using.
+  const noiseBuffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 2, audioCtx.sampleRate);
+  const noiseData = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < noiseData.length; i++) noiseData[i] = Math.random() * 2 - 1;
+  const rocketNoise = audioCtx.createBufferSource();
+  rocketNoise.buffer = noiseBuffer;
+  rocketNoise.loop = true;
+  rocketNoiseFilter = audioCtx.createBiquadFilter();
+  rocketNoiseFilter.type = "bandpass";
+  rocketNoiseFilter.frequency.value = 260;
+  rocketNoiseFilter.Q.value = 0.7;
+  rocketNoiseGain = audioCtx.createGain();
+  rocketNoiseGain.gain.value = 0;
+  rocketNoise.connect(rocketNoiseFilter);
+  rocketNoiseFilter.connect(rocketNoiseGain);
+  rocketNoiseGain.connect(masterGain);
+  rocketNoise.start();
+
+  const rocketRumbleOsc = audioCtx.createOscillator();
+  rocketRumbleOsc.type = "sawtooth";
+  rocketRumbleOsc.frequency.value = 45;
+  rocketRumbleGain = audioCtx.createGain();
+  rocketRumbleGain.gain.value = 0;
+  rocketRumbleOsc.connect(rocketRumbleGain);
+  rocketRumbleGain.connect(masterGain);
+  rocketRumbleOsc.start();
+
   audioCtx.resume();
 }
 
@@ -464,9 +496,23 @@ function setSoundEnabled(enabled) {
 function updateEngineSound() {
   if (!audioCtx) return;
   const flying = state.launched && !state.crashed && !state.landed;
+  const t = audioCtx.currentTime;
+
+  if (LEVELS[currentLevelIndex].isSpace) {
+    // Responds to any thruster firing, not just the main engine - a strafe
+    // burst alone should still sound like something's happening.
+    const thrustMag = flying ? Math.max(Math.abs(controls.thrustZ), Math.abs(controls.strafeX), Math.abs(controls.strafeY)) : 0;
+    rocketNoiseFilter.frequency.setTargetAtTime(260 + 900 * thrustMag, t, 0.12);
+    rocketNoiseGain.gain.setTargetAtTime(thrustMag > 0.02 ? 0.05 + 0.22 * thrustMag : 0, t, 0.08);
+    rocketRumbleGain.gain.setTargetAtTime(thrustMag > 0.02 ? 0.03 + 0.05 * thrustMag : 0, t, 0.08);
+    engineGain.gain.setTargetAtTime(0, t, 0.1);
+    return;
+  }
+  rocketNoiseGain.gain.setTargetAtTime(0, t, 0.1);
+  rocketRumbleGain.gain.setTargetAtTime(0, t, 0.1);
+
   const targetFreq = flying ? 55 + 70 * controls.throttle : 42;
   const targetGain = flying ? 0.05 + 0.09 * controls.throttle : 0;
-  const t = audioCtx.currentTime;
   engineOsc1.frequency.setTargetAtTime(targetFreq, t, 0.15);
   engineOsc2.frequency.setTargetAtTime(targetFreq, t, 0.15);
   engineGain.gain.setTargetAtTime(targetGain, t, 0.2);
@@ -2106,6 +2152,7 @@ const cockpitOffset = new V3(0, 0.55, -1.1);
 const _camDesired = new V3();
 const _camLookTarget = new V3();
 const _camFwd = new V3();
+const _camShipUp = new V3();
 const UP_OFFSET = new V3(0, 1, 0); // constant, read-only - never mutated
 
 const _bossRevealMid = new V3();
@@ -2133,7 +2180,21 @@ function updateCamera(dt) {
   }
   if (camera.fov !== 62) { camera.fov = 62; camera.updateProjectionMatrix(); }
   const q = glider.quaternion;
-  if (cameraMode === "chase") {
+  if (cameraMode === "chase" && LEVELS[currentLevelIndex].isSpace) {
+    // A rigid mount bolted to the hull, not a world-up-stabilized rig - out
+    // here the ship can point any which way, so "world up" isn't a stable
+    // reference to smooth toward at all. Using it (like the atmosphere chase
+    // cam below does) made the camera swing wildly as the ship's own
+    // orientation drifted away from world up. Locking position/orientation
+    // to the ship's own frame every frame, with no smoothing lag, reads as
+    // "fixed behind the vehicle" instead - exactly what makes it flyable.
+    _camDesired.copy(chaseOffset).applyQuaternion(q).add(glider.position);
+    camera.position.copy(_camDesired);
+    _camShipUp.copy(LOCAL_UP).applyQuaternion(q);
+    camera.up.copy(_camShipUp);
+    _camLookTarget.copy(glider.position).addScaledVector(_camShipUp, UP_OFFSET.y);
+    camera.lookAt(_camLookTarget);
+  } else if (cameraMode === "chase") {
     // Always the normal close offset, even with the boss active - pulling
     // the main camera back to keep him in frame (an earlier approach) made
     // the player's own glider too small and distant to fly precisely by,
@@ -2461,6 +2522,7 @@ window.__sim = {
   initAudio, playRingChime, playCrashSound, playVictoryFanfare, setSoundEnabled,
   getAudioCtx: () => audioCtx, isSoundEnabled: () => soundEnabled,
   getEngineParams: () => ({ gain: engineGain.gain.value, freq: engineOsc1.frequency.value }),
+  getRocketParams: () => ({ noiseGain: rocketNoiseGain.gain.value, rumbleGain: rocketRumbleGain.gain.value, filterFreq: rocketNoiseFilter.frequency.value }),
   // terrainHeight is reassigned per level - expose a wrapper that always
   // delegates to the current one, rather than capturing today's value.
   VILLAGES, FIELDS, terrainHeight: (x, z) => terrainHeight(x, z), terrainSlopeAt, scene,
