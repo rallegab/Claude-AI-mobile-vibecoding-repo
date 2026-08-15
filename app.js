@@ -1706,7 +1706,19 @@ for (let i = 0; i < BOSS_PROJECTILE_COUNT; i++) {
 // instant "shot down" state: enough hits genuinely zeroes the aircraft's
 // lift, and the existing ground-collision/crash logic takes it from there.
 const BOSS_SPAWN_DISTANCE = 500;
-const BOSS_CRUISE_SPEED = 46;
+const BOSS_CRUISE_SPEED = 38; // nominal speed while holding station near the standoff point
+// Hard ceiling on the Baron's speed, regardless of how far he is from his
+// chase target - 150 km/h. A sustained top-speed dive/run can actually hold
+// him off (or briefly outrun him) rather than him always closing the gap
+// no matter what, though the glider's own cruise speed is close enough to
+// this that he'll still generally catch back up before long.
+const BOSS_MAX_SPEED = 150 / 3.6;
+// Hard ceiling on how fast the Baron can reorient per second, regardless of
+// how large the desired-heading error is (see updateBoss) - brisk enough
+// for a full 180deg reversal to still take just over a second, but firmly
+// rules out the near-instant flick a large error would otherwise produce
+// in a single physics step.
+const BOSS_MAX_TURN_RATE = Math.PI * 0.9; // rad/s, ~162deg/s
 // How far behind the player the Baron settles once he's caught up. Used to
 // sit much tighter (35) to stay inside the old dynamic camera pullback's
 // frame - that pullback is gone now (he's shown in the PIP instead, see
@@ -2109,23 +2121,40 @@ function updateBoss(dt) {
   else _bossDesiredDir.copy(_bossFwd);
 
   bossQuatFromForward(_bossDesiredDir, _bossDesiredQuat);
-  // Exponential-decay turn rate, same framerate-independent pattern the
-  // chase camera already uses - avoids the boss snapping onto a new heading
-  // instantly while still turning briskly.
-  boss.quat.slerp(_bossDesiredQuat, 1 - Math.pow(0.0006, dt));
+  // Exponential-decay turn rate for normal corrections, same
+  // framerate-independent pattern the chase camera already uses - but
+  // capped by a hard max angular rate for LARGE errors: the exponential
+  // alone will happily turn through however many degrees show up in a
+  // single frame, and a near-180deg one does show up whenever the desired
+  // direction swings sharply (e.g. right after overshooting past the chase
+  // target under the old uncapped speed model) - that read as a violent,
+  // all-at-once flick rather than a turn. When the error is small the
+  // slerp's own step is always well under the cap anyway (it only ever
+  // covers a fraction of the remaining error), so this only ever pulls
+  // back the large-error case.
+  const angleToDesired = boss.quat.angleTo(_bossDesiredQuat);
+  const maxTurnStep = BOSS_MAX_TURN_RATE * dt;
+  if (angleToDesired > maxTurnStep) {
+    boss.quat.rotateTowards(_bossDesiredQuat, maxTurnStep);
+  } else {
+    boss.quat.slerp(_bossDesiredQuat, 1 - Math.pow(0.0006, dt));
+  }
 
   _bossOwnFwd.copy(LOCAL_FWD).applyQuaternion(boss.quat);
-  // Two-phase speed: a fast intercept while still far from the chase target
-  // (closing a 500m spawn gap at only a modest cruise-speed multiplier took
-  // over 10 seconds in testing - most of the encounter would pass with the
-  // Baron barely visible, let alone close enough to threaten), then easing
-  // down to a speed that holds a stable trailing position once close rather
-  // than continuing to close in and overshoot/oscillate around the player.
+  // Two-phase speed, both capped at BOSS_MAX_SPEED: a fast intercept while
+  // still far from the chase target (closing a 500m spawn gap at only a
+  // modest cruise speed took over 10s in testing), easing to a speed that
+  // holds station near the standoff distance once close. The close-range
+  // term now actually approaches zero as distToTarget shrinks, rather than
+  // the old hard floor well above zero that guaranteed flying straight
+  // through the target every time and having to whip back around for
+  // another pass - see the turn-rate cap above for why that looked bad.
   let speed;
   if (distToTarget > 80) {
-    speed = THREE.MathUtils.clamp(distToTarget * 0.9, 90, 180);
+    speed = BOSS_MAX_SPEED;
   } else {
-    speed = THREE.MathUtils.clamp(BOSS_CRUISE_SPEED + (distToTarget - 20) * 0.6, BOSS_CRUISE_SPEED * 0.6, BOSS_CRUISE_SPEED * 1.4);
+    const standoff = 20;
+    speed = THREE.MathUtils.clamp(BOSS_CRUISE_SPEED * (distToTarget / standoff), 0, BOSS_MAX_SPEED);
   }
   boss.vel.copy(_bossOwnFwd).multiplyScalar(speed);
   boss.pos.addScaledVector(boss.vel, dt);
